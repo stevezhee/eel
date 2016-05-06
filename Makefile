@@ -1,6 +1,6 @@
-.PHONY: test
+.PHONY: test all lint doc clean
 
-all : doc lint test
+all : test doc lint
 	stack install
 
 lint :
@@ -11,3 +11,6 @@ doc :
 
 test :
 	stack test
+
+clean :
+	stack clean

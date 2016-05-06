@@ -4,5 +4,4 @@ module Main where
 import Eel
 
 main :: IO ()
-main =
-  runM $ sub (add (lit 21) (lit 32)) (lit 11)
+main = mainM $ \(argc, _argv) -> add (lit 42) argc
