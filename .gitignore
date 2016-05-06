@@ -1,3 +1,6 @@
 .stack-work
 *~
+*\.ll
+*\.out
+*\.s
 TAGS

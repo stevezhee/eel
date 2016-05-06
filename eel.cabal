@@ -7,7 +7,7 @@ license:             BSD3
 license-file:        LICENSE
 author:              Author name here
 maintainer:          example@example.com
-copyright:           2016 Author name here
+copyright:           2016 Brett Letner
 category:            Web
 build-type:          Simple
 -- extra-source-files:

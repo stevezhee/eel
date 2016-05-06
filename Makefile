@@ -1,6 +1,6 @@
 .PHONY: test
 
-all : doc lint
+all : doc lint test
 	stack install
 
 lint :

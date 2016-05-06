@@ -5,4 +5,4 @@ import Eel
 
 main :: IO ()
 main =
-  runM $ sub (add (lit 21) (lit 32)) (lit 11)
+  runM $ cast $ ge (shr (add (lit 21 :: M Word8) (lit 32)) (lit 1)) (lit 11)
