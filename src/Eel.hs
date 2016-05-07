@@ -11,7 +11,8 @@ Maintainer  :
 Stability   : experimental
 Portability : 
 
-The Eel EDSL is an Embedded Domain Specific Language intended for embedded (resource constrained) development.
+The Eel EDSL is an Embedded Domain Specific Language intended for
+embedded (resource constrained) development.
 
 -}
 
@@ -40,8 +41,8 @@ type Value = String
 data V a = V{ valof :: Value, tyof :: Type } deriving Show
 
 -- | Internal function for (unsafely) forcing a change in type.
-unV :: V a -> V b
-unV (V a b) = V a b
+castV :: V a -> V b
+castV (V a b) = V a b
 
 -- | Helper function for use when you want to show both the type and
 -- the value, e.g. i32 7.
@@ -59,10 +60,14 @@ data Context = Context
 initContext :: Context
 initContext = Context 0 0 []
 
+-- | Quick and dirty stack representation.
+type Stack a = [a]
+
 -- | Internal state used during processing.
 data St = St
   { context :: Context -- ^ current context
-  , contexts :: [Context] -- ^ stack of contexts
+  , contexts :: Stack Context -- ^ stack of contexts
+  , blocks :: Stack Label -- ^ stack of the current label
   , namespace :: [(String, [String])] -- ^ global namespace
   } deriving Show
 
@@ -122,19 +127,25 @@ instance Ty Float where ty _ = "float"
 -- | 64 bit ordered doubles.  Does Haskell have sized Doubles?
 instance Ty Double where ty _ = "double"
 -- | pointers.
-instance Ty a => Ty (Ptr a) where ty (_ :: I (Ptr a)) = ty (unused "Ty Ptr" :: I a) ++ "*"
+instance Ty a => Ty (Ptr a) where
+  ty (_ :: I (Ptr a)) = ty (unused "Ty Ptr" :: I a) ++ "*"
 
 -- | A class is used to model parameters/arguments.
 class Args a where
   instantiate :: M a
   unArgs :: a -> [V ()]
 
+-- | Zero arguments.
+instance Args () where
+  instantiate = return ()
+  unArgs () = []
+
 -- | Single argument.
 instance Ty a => Args (V a) where
   instantiate = do
     cxt <- modifyCxt $ \cxt -> cxt{ nextVar = succ $ nextVar cxt }
     return $ mkV ("%v" ++ show (nextVar cxt))
-  unArgs x = [unV x]
+  unArgs x = [castV x]
   
 -- | Two arguments.
 instance (Args a, Args b) => Args (a,b) where
@@ -482,18 +493,8 @@ cast x = b
       (FP _, UInt _) -> to "fptoui"
       (FP i, FP j) | i > j -> to "fptrunc"
       (FP i, FP j) | i < j -> to "fpext"
-      _ -> return $ unV x -- Types are LLVM equivalent.  Just change the EDSL type.
+      _ -> return $ castV x -- Types are LLVM equivalent.  Just change the EDSL type.
     to s = assign [s, tyvalof x, "to", ty b]
-
--- | Convience function that pairs up defines and calls for LLVM
--- functions.  http://llvm.org/docs/LangRef.html#functions
-func :: (Args a, Ty b) => String -> (a -> I b) -> a -> I b
-func n f a = define n f ty tyvalof >> call n a
-  
--- | Convience function that pairs up defines and calls for LLVM
--- procedures.  http://llvm.org/docs/LangRef.html#functions
-func' :: Args a => String -> (a -> M ()) -> a -> M ()
-func' n f a = define n f (const "void") (const "void") >> call' n a
 
 -- | Internal function used for LLVM function definitions. The
 -- argument with type (M b -> String) must be a function that doesn't
@@ -522,28 +523,62 @@ whenUnknown n m = do
       , contexts = tail $ contexts st
       }
 
--- | Internal function used for LLVM function call instruction.
--- http://llvm.org/docs/LangRef.html#call-instruction
-call :: (Args a, Ty b) => String -> a -> I b
-call n x = b
-  where
-    b = assign ["call", ty b, global n, params $ tyvalof <$> unArgs x]
+class Ret r where
+  -- | Function definition.  Function definitions are generated
+  -- automatically.
+  -- http://llvm.org/docs/LangRef.html#functions
+  func :: (Args a) => String -> (a -> M r) -> a -> M r
+  -- | Foreign function interface.  Function declarations are
+  -- generated automatically.
+  -- http://llvm.org/docs/LangRef.html#functions
+  ffi :: (Args a) => String -> a -> M r
+  -- | Internal function used for LLVM procedure call instruction.
+  -- http://llvm.org/docs/LangRef.html#call-instruction
+  call :: (Args a) => String -> a -> M r
+  -- | 'if' function (works for both expressions and statements).
+  if' :: I Bool -> M r -> M r -> M r
 
--- | Internal function used for LLVM procedure call instruction.
--- http://llvm.org/docs/LangRef.html#call-instruction
-call' :: (Args a) => String -> a -> M ()
-call' n x = instr ["call", "void", global n, params $ tyvalof <$> unArgs x]
-
--- | LLVM foreign function interface.
--- http://llvm.org/docs/LangRef.html#functions
-ffi :: (Args a, Ty b) => String -> a -> I b
-ffi n x = let b = declare n (ty b) x >> call n x in b
+instance Ty b => Ret (V b) where
+  func n f a = define n f ty tyvalof >> call n a
+  ffi n x = let b = declare n (ty b) x >> call n x in b
+  call n x = b
+    where
+      b = assign ["call", ty b, global n, params $ tyvalof <$> unArgs x]
+  if' x y z = do
+    a <- x
+    true_lbl <- newLabel
+    false_lbl <- newLabel
+    done_lbl <- newLabel
+    br a true_lbl false_lbl
+    block true_lbl
+    b <- y
+    phi_true_lbl <- currBlock
+    br' done_lbl
+    block false_lbl
+    c <- z
+    phi_false_lbl <- currBlock
+    br' done_lbl
+    block done_lbl
+    phi [(b, phi_true_lbl), (c, phi_false_lbl)]
   
--- | LLVM foreign procedure interface.
--- http://llvm.org/docs/LangRef.html#functions
-ffi' :: (Args a) => String -> a -> M ()
-ffi' n a = declare n "void" a >> call' n a
-
+instance Ret () where
+  func n f a = define n f (const "void") (const "void") >> call n a
+  ffi n a = declare n "void" a >> call n a
+  call n x = instr ["call", "void", global n, params $ tyvalof <$> unArgs x]
+  if' x y z = do
+    a <- x
+    true_lbl <- newLabel
+    false_lbl <- newLabel
+    done_lbl <- newLabel
+    br a true_lbl false_lbl
+    block true_lbl
+    y
+    br' done_lbl
+    block false_lbl
+    z
+    br' done_lbl
+    block done_lbl
+  
 -- | Internal function used for LLVM function declarations.
 -- functions.  http://llvm.org/docs/LangRef.html#functions
 declare :: (Args a) => String -> Type -> a -> M ()
@@ -585,30 +620,61 @@ getelementptr p i = assign ["getelementptr", tyvalof p `comma` tyvalof i]
 -- }
 mainM :: ((V Int32, V (Ptr (Ptr Word8))) -> I Int32) -> IO ()
 mainM f = do
-  let st = execState (define "main" f ty tyvalof) $ St initContext [] []
+  let st = execState (define "main" f ty tyvalof) $ St initContext [] [] []
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
-  callCommand "cat t.ll"
+  -- callCommand "cat t.ll"
   callCommand "llc -fatal-assembler-warnings t.ll"
-  callCommand "clang -Weverything -o t.exe t.s eel.c"
+  callCommand "clang -lSDL2 -I/usr/include/SDL2 -o t.exe t.s eel.c"
   callCommand "./t.exe"
 
--- | Quick and dirty representation of LLVM labels.  http://llvm.org/docs/LangRef.html#label-type
+-- | Quick and dirty representation of LLVM labels.
+-- http://llvm.org/docs/LangRef.html#label-type
 type Label = String
 
 -- | Helper used for branching to labels.
 label :: Label -> String
 label = (++) "label %"
 
+-- | Start a new block.  There should always be a br preceding this.
 block :: Label -> M ()
-block x = instr [x ++ ":"]
+block x = do
+  modify $ \st -> st{ blocks = x : blocks st }
+  instr [x ++ ":"]
 
--- | LLVM conditional br instruction. http://llvm.org/docs/LangRef.html#br-instruction
+-- | Get the current label from the stack of labels.
+currBlock :: M Label
+currBlock = do
+  xs <- gets blocks
+  case xs of
+    [] -> error "currBlock:empty stack"
+    x:_ -> return x
+
+-- | Remove the current label from the stack of labels.
+popBlock :: M ()
+popBlock = modify $ \st -> st
+  { blocks = case blocks st of
+      [] -> error "popBlock:empty stack"
+      _:xs -> xs
+  }
+
+-- | LLVM conditional br instruction.  There should always be a block following this.
+-- http://llvm.org/docs/LangRef.html#br-instruction
 br :: V Bool -> Label -> Label -> M ()
-br x y z = instr ["br", tyvalof x `comma` label y `comma` label z]
+br x y z = popBlock >> instr ["br", tyvalof x `comma` label y `comma` label z]
 
--- | LLVM unconditional br instruction. http://llvm.org/docs/LangRef.html#br-instruction
+-- | LLVM unconditional br instruction.  There should always be a
+-- block following this.
+-- http://llvm.org/docs/LangRef.html#br-instruction
 br' :: Label -> M ()
-br' x = instr ["br", label x]
+br' x = popBlock >> instr ["br", label x]
+
+-- | LLVM phi instruction.
+-- http://llvm.org/docs/LangRef.html#phi-instruction
+phi :: Ty a => [(V a, Label)] -> I a
+phi xs = a
+  where
+    a = assign ["phi", ty a, commas [ "[" ++ valof b `comma` "%" ++ c ++ "]"
+                                    | (b,c) <- xs ] ]
   
 -- | Construct a local unique label.
 newLabel :: M Label
@@ -629,8 +695,12 @@ instr = output . unwords
   
 -- | Helper function to print out LLVM parameters.
 params :: [String] -> String
-params [] = "()"
-params xs = "(" ++ foldr1 comma xs ++ ")"
+params xs = "(" ++ commas xs ++ ")"
+
+-- | Helper function to comma separate strings.
+commas :: [String] -> String
+commas [] = ""
+commas xs = foldr1 comma xs
 
 -- | Helper function to print out LLVM global names.
 global :: String -> String
