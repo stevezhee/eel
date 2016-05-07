@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-|
 Module      : Eel
-Description : Eel EDSL.
+Description : DSL
 Copyright   : Brett Letner, 2016
 License     : BSD3
 Maintainer  : 
@@ -43,28 +43,28 @@ data V a = V{ valof :: Value, tyof :: Type } deriving Show
 tyvalof :: V a -> String
 tyvalof x = unwords [ tyof x, valof x ]
 
+-- | Current output context.
 data Context = Context
-  { nextVar :: Int
-  , nextLabel :: Int
-  , outputs :: [String]
+  { nextVar :: Int -- ^ used to generate unique variables
+  , nextLabel :: Int -- ^ used to generate uniqe labels
+  , outputs :: [String] -- ^ output buffer
   } deriving Show
 
+-- | Initial context.
 initContext :: Context
 initContext = Context 0 0 []
 
 -- | Internal state used during processing.
 data St = St
-  { context :: Context -- | current context
-  , contexts :: [Context] -- | stack of contexts
-  , namespace :: [(String, [String])] -- | global namespace
+  { context :: Context -- ^ current context
+  , contexts :: [Context] -- ^ stack of contexts
+  , namespace :: [(String, [String])] -- ^ global namespace
   } deriving Show
 
--- Right now we are simply going to output strings directly to the
--- console but later we'll probably want to add some state so let's
--- use the (wildly descriptive) name I instead of IO.
--- 
+-- | State monad to thread our state with.
 type M a = State St a
 
+-- | Shorthand for values returned from the state.
 type I a = M (V a)
   
 -- | LLVM pointer type.
@@ -136,7 +136,7 @@ instance Lit Float where lit = mkV . show -- BAL: implement IEEE 754 for LLVM
 -- | 64 bit ordered doubles.  Currently broken.
 instance Lit Double where lit = mkV . show -- BAL: implement IEEE 754 for LLVM
 
--- | LLVM arithmetic primitives are (adhoc)polymorphic so let's create
+-- | LLVM arithmetic primitives are (ad hoc)polymorphic so let's create
 -- a class to enable/enforce that too.
 class Ty a => Arith a where
   arithRec :: ArithRec a
@@ -192,6 +192,7 @@ instance Arith Float where arithRec = floatArith
 -- | 64 bit ordered doubles.
 instance Arith Double where arithRec = floatArith
 
+-- | Helper function to update the current context.
 modifyCxt :: (Context -> Context) -> M Context
 modifyCxt f = do
   cxt <- gets context
@@ -199,18 +200,10 @@ modifyCxt f = do
   modify $ \st -> st{ context = a }
   return cxt
 
+-- | Add a string to the output of the current context.
 output :: String -> M ()
 output s = void $ modifyCxt $ \cxt -> cxt{ outputs = s : outputs cxt }
       
-push :: M a -> M (a, [String])
-push m = do
-  modify $ \st -> st{ context = initContext, contexts =  context st : contexts st }
-  a <- m
-  cxt <- gets context
-  x : xs <- gets contexts
-  modify $ \st -> st{ context = x, contexts = xs }
-  return (a, reverse $ outputs cxt)
-  
 -- | Output an LLVM instruction.
 instr :: [String] -> M ()
 instr = output . unwords
@@ -260,29 +253,25 @@ call n x =
 -- http://llvm.org/docs/LangRef.html#call-instruction
 call' :: (Args a) => String -> a -> M ()
 call' n x = unArgs x >>= \a -> instr ["call", "void", global n, params $ fmap tyvalof a]
-  
-mainM :: ((I Int32, I (Ptr (Ptr Word8))) -> I Int32) -> IO ()
-mainM f = do
-  let st = execState (define "main" f tyof tyvalof) $ St initContext [] []
-  putStrLn $ unlines $ concat $ reverse $ snd <$> namespace st
 
--- | Internal function used for LLVM function definitions.
+-- | Internal function used for LLVM function definitions. The
+-- argument with type (M b -> String) must be a function that doesn't
+-- evaluate it's argument.
 -- http://llvm.org/docs/LangRef.html#functions
-define :: Args a => String -> (a -> M b) -> (b -> String) -> (b -> String) -> M ()
+define :: Args a => String -> (a -> M b) -> (M b -> String) -> (b -> String) -> M ()
 define n f g h = whenUnknown n $ do
   x <- instantiate
-  (b, body) <- push $ f x
   a <- unArgs x
-  instr ["define", g b, global n, params $ fmap tyvalof a]
+  instr ["define", g $ f x, global n, params $ fmap tyvalof a]
   output "{"
-  mapM_ output body
+  b <- f x
   instr ["ret", h b]
   output "}"
 
 -- | Convience function that pairs up defines and calls for LLVM
 -- functions.  http://llvm.org/docs/LangRef.html#functions
 func :: (Args a, Ty b) => String -> (a -> I b) -> a -> I b
-func n f a = define n f tyof tyvalof >> call n a
+func n f a = define n f ty tyvalof >> call n a
   
 -- | Convience function that pairs up defines and calls for LLVM
 -- procedures.  http://llvm.org/docs/LangRef.html#functions
@@ -295,8 +284,13 @@ whenUnknown :: String -> M () -> M ()
 whenUnknown n m = do
   ns <- (fst . unzip) <$> gets namespace
   when (n `notElem` ns) $ do
-    ((), d) <- push m
-    modify $ \st -> st{ namespace = (n, d) : namespace st }
+    modify $ \st -> st{ context = initContext, contexts =  context st : contexts st }
+    m
+    modify $ \st -> st
+      { namespace = (n, reverse $ outputs $ context st) : namespace st
+      , context = head $ contexts st
+      , contexts = tail $ contexts st
+      }
 
 -- | Internal function used for LLVM function declarations.
 -- functions.  http://llvm.org/docs/LangRef.html#functions
@@ -366,13 +360,21 @@ getelementptr x y = do
   i <- y
   assign ["getelementptr", ty (load x) `comma` tyvalof p `comma` tyvalof i]
 
--- | Generate M from our monad.  Currently just generates a main
--- function that takes no parameters and returns a value.
+-- | Generate text from our monad.  This is the program generation
+-- entry point.
 -- | As an example:
 --
 -- >>> mainM $ \(argc, argv) -> add (lit 42) argc
 -- 
--- BAL:!!!!! put result here
+-- define i32 @main (i32 %v0, i8** %v1)
+-- {
+-- %v2 = add i32 42, %v0
+-- ret i32 %v2
+-- }
+mainM :: ((I Int32, I (Ptr (Ptr Word8))) -> I Int32) -> IO ()
+mainM f = do
+  let st = execState (define "main" f ty tyvalof) $ St initContext [] []
+  putStrLn $ unlines $ concat $ reverse $ snd <$> namespace st
   
 -- | Construct a local unique label.
 newLabel :: M Label
