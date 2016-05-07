@@ -18,7 +18,8 @@ library
   exposed-modules:     Eel
   build-depends:       base >= 4.7 && < 5,
                        containers >= 0.5.6.2,
-                       monads-tf >= 0.1.0.2
+                       monads-tf >= 0.1.0.2,
+                       process >= 1.2.3.0
   default-language:    Haskell2010
 
 executable eel-exe

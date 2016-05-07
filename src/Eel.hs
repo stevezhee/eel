@@ -26,6 +26,7 @@ where
 import Data.Int
 import Data.Word
 import Control.Monad.State
+import System.Process
 
 -- | Quick and dirty representation of LLVM types.
 -- http://llvm.org/docs/LangRef.html#type-system
@@ -340,10 +341,11 @@ alloca = alloca' (lit 1 :: I Int32)
 alloca' :: (Ty a, IsInt b) => I b -> I (Ptr a)
 alloca' x = let a = x >>= \b -> assign ["alloca", ty (load a) `comma` tyvalof b] in a
 
--- | LLVM load instruction.
--- http://llvm.org/docs/LangRef.html#load-instruction
+-- | LLVM load instruction. The documentation seems to be wrong.  What
+-- works for me is: %val = load i32* %ptr, not %val = load i32, i32*.
+-- %ptr.  http://llvm.org/docs/LangRef.html#load-instruction
 load :: Ty a => I (Ptr a) -> I a
-load x = let b = x >>= \a -> assign ["load", ty b `comma` tyvalof a] in b
+load x = x >>= \a -> assign ["load", tyvalof a]
 
 -- | LLVM store instruction.
 -- http://llvm.org/docs/LangRef.html#store-instruction
@@ -374,7 +376,10 @@ getelementptr x y = do
 mainM :: ((I Int32, I (Ptr (Ptr Word8))) -> I Int32) -> IO ()
 mainM f = do
   let st = execState (define "main" f ty tyvalof) $ St initContext [] []
-  putStrLn $ unlines $ concat $ reverse $ snd <$> namespace st
+  writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
+  callCommand "cat t.ll"
+  callCommand "llc t.ll"
+  callCommand "clang -o t.exe t.s"
   
 -- | Construct a local unique label.
 newLabel :: M Label
