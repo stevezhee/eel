@@ -244,17 +244,6 @@ params xs = "(" ++ foldr1 comma xs ++ ")"
 global :: String -> String
 global = (++) "@"
 
--- | Internal function used for LLVM function call instruction.
--- http://llvm.org/docs/LangRef.html#call-instruction
-call :: (Args a, Ty b) => String -> a -> I b
-call n x =
-  let b = unArgs x >>= \a -> assign ["call", ty b, global n, params $ fmap tyvalof a] in b
-
--- | Internal function used for LLVM procedure call instruction.
--- http://llvm.org/docs/LangRef.html#call-instruction
-call' :: (Args a) => String -> a -> M ()
-call' n x = unArgs x >>= \a -> instr ["call", "void", global n, params $ fmap tyvalof a]
-
 -- | Internal function used for LLVM function definitions. The
 -- argument with type (M b -> String) must be a function that doesn't
 -- evaluate it's argument.
@@ -293,6 +282,17 @@ whenUnknown n m = do
       , contexts = tail $ contexts st
       }
 
+-- | Internal function used for LLVM function call instruction.
+-- http://llvm.org/docs/LangRef.html#call-instruction
+call :: (Args a, Ty b) => String -> a -> I b
+call n x =
+  let b = unArgs x >>= \a -> assign ["call", ty b, global n, params $ fmap tyvalof a] in b
+
+-- | Internal function used for LLVM procedure call instruction.
+-- http://llvm.org/docs/LangRef.html#call-instruction
+call' :: (Args a) => String -> a -> M ()
+call' n x = unArgs x >>= \a -> instr ["call", "void", global n, params $ fmap tyvalof a]
+
 -- | Internal function used for LLVM function declarations.
 -- functions.  http://llvm.org/docs/LangRef.html#functions
 declare :: (Args a) => String -> Type -> a -> M ()
@@ -303,7 +303,7 @@ declare n t x = whenUnknown n $ do
 -- | LLVM foreign function interface.
 -- http://llvm.org/docs/LangRef.html#functions
 ffi :: (Args a, Ty b) => String -> a -> I b
-ffi n a = let b = declare n (ty b) a >> call n a in b
+ffi n x = let b = declare n (ty b) x >> call n x in b
   
 -- | LLVM foreign procedure interface.
 -- http://llvm.org/docs/LangRef.html#functions
@@ -334,12 +334,17 @@ br' x = instr ["br", label x]
 -- | LLVM alloca instruction without the number of elements.
 -- http://llvm.org/docs/LangRef.html#alloca-instruction
 alloca :: (Ty a) => I (Ptr a)
-alloca = alloca' (lit 1 :: I Int32)
+alloca = alloca' (lit 1)
+
+-- | LLVM alloca instruction with the number of elements (less polymorphic version).
+-- http://llvm.org/docs/LangRef.html#alloca-instruction
+alloca' :: (Ty a) => I Int32 -> I (Ptr a)
+alloca' = alloca''
 
 -- | LLVM alloca instruction with the number of elements.
 -- http://llvm.org/docs/LangRef.html#alloca-instruction
-alloca' :: (Ty a, IsInt b) => I b -> I (Ptr a)
-alloca' x = let a = x >>= \b -> assign ["alloca", ty (load a) `comma` tyvalof b] in a
+alloca'' :: (Ty a, IsInt b) => I b -> I (Ptr a)
+alloca'' x = let a = x >>= \b -> assign ["alloca", ty (load a) `comma` tyvalof b] in a
 
 -- | LLVM load instruction. The documentation seems to be wrong.  What
 -- works for me is: %val = load i32* %ptr, not %val = load i32, i32*.
@@ -355,12 +360,18 @@ store x y = do
   p <- y
   instr ["store", tyvalof a `comma` tyvalof p]
 
--- | LLVM getelementptr instruction.
-getelementptr :: (Ty a, IsInt b) => I (Ptr a) -> I b -> I (Ptr a)
-getelementptr x y = do
+-- | LLVM getelementptr instruction.  Docs seem to be wrong.
+-- http://llvm.org/docs/LangRef.html#getelementptr-instruction
+getelementptr' :: (Ty a, IsInt b) => I (Ptr a) -> I b -> I (Ptr a)
+getelementptr' x y = do
   p <- x
   i <- y
-  assign ["getelementptr", ty (load x) `comma` tyvalof p `comma` tyvalof i]
+  assign ["getelementptr", tyvalof p `comma` tyvalof i]
+
+-- | LLVM getelementptr instruction (less polymorphic version).
+-- http://llvm.org/docs/LangRef.html#getelementptr-instruction
+getelementptr :: (Ty a) => I (Ptr a) -> I Int32 -> I (Ptr a)
+getelementptr = getelementptr'
 
 -- | Generate text from our monad.  This is the program generation
 -- entry point.
@@ -378,8 +389,8 @@ mainM f = do
   let st = execState (define "main" f ty tyvalof) $ St initContext [] []
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
   callCommand "cat t.ll"
-  callCommand "llc t.ll"
-  callCommand "clang -o t.exe t.s"
+  callCommand "llc -fatal-assembler-warnings t.ll"
+  callCommand "clang --Wall -o t.exe t.s eel.c"
   
 -- | Construct a local unique label.
 newLabel :: M Label
