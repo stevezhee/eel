@@ -39,6 +39,10 @@ type Value = String
 -- EDSL.  Datatypes such as this are called phantom types.
 data V a = V{ valof :: Value, tyof :: Type } deriving Show
 
+-- | Internal function for (unsafely) forcing a change in type.
+unV :: V a -> V b
+unV (V a b) = V a b
+
 -- | Helper function for use when you want to show both the type and
 -- the value, e.g. i32 7.
 tyvalof :: V a -> String
@@ -65,8 +69,20 @@ data St = St
 -- | State monad to thread our state with.
 type M a = State St a
 
--- | Shorthand for values returned from the state.
+-- | Instruction.  Shorthand for values returned from the state monad.
 type I a = M (V a)
+
+-- | Helper function to update the current context.
+modifyCxt :: (Context -> Context) -> M Context
+modifyCxt f = do
+  cxt <- gets context
+  let a = f cxt
+  modify $ \st -> st{ context = a }
+  return cxt
+
+-- | Add a string to the output of the current context.
+output :: String -> M ()
+output s = void $ modifyCxt $ \cxt -> cxt{ outputs = s : outputs cxt }
   
 -- | LLVM pointer type.
 -- http://llvm.org/docs/LangRef.html#pointer-type
@@ -108,15 +124,32 @@ instance Ty Double where ty _ = "double"
 -- | pointers.
 instance Ty a => Ty (Ptr a) where ty (_ :: I (Ptr a)) = ty (unused "Ty Ptr" :: I a) ++ "*"
 
+-- | A class is used to model parameters/arguments.
+class Args a where
+  instantiate :: M a
+  unArgs :: a -> [V ()]
+
+-- | Single argument.
+instance Ty a => Args (V a) where
+  instantiate = do
+    cxt <- modifyCxt $ \cxt -> cxt{ nextVar = succ $ nextVar cxt }
+    return $ mkV ("%v" ++ show (nextVar cxt))
+  unArgs x = [unV x]
+  
+-- | Two arguments.
+instance (Args a, Args b) => Args (a,b) where
+  instantiate = (,) <$> instantiate <*> instantiate
+  unArgs (x,y) = unArgs x ++ unArgs y
+
 -- | A class will allow us to convert Haskell values into LLVM
 -- literals.
 class Ty a => Lit a where
-  lit :: a -> I a
+  lit :: a -> V a
 
 -- | Helper function for defining values.  Using laziness to good
 -- effect here.
-mkV :: Ty a => String -> I a
-mkV x = let m = return V{ valof = x, tyof = ty m } in m
+mkV :: Ty a => String -> V a
+mkV x = let v = V{ valof = x, tyof = ty (return v) } in v
 
 -- | booleans.
 instance Lit Bool where lit x = mkV $ if x then "true" else "false"
@@ -137,11 +170,6 @@ instance Lit Float where lit = mkV . show -- BAL: implement IEEE 754 for LLVM
 -- | 64 bit ordered doubles.  Currently broken.
 instance Lit Double where lit = mkV . show -- BAL: implement IEEE 754 for LLVM
 
--- | LLVM arithmetic primitives are (ad hoc)polymorphic so let's create
--- a class to enable/enforce that too.
-class Ty a => Arith a where
-  arithRec :: ArithRec a
-
 -- | This record is used to eliminate boilerplate in the Arith
 -- instance definitions.
 data ArithRec a = ArithRec
@@ -151,6 +179,11 @@ data ArithRec a = ArithRec
   , _div :: String
   , _rem :: String
   }
+
+-- | LLVM arithmetic primitives are (ad hoc)polymorphic so let's create
+-- a class to enable/enforce that too.
+class Ty a => Arith a where
+  arithRec :: ArithRec a
 
 -- | ArithRec helper for signed integer types.
 intArith :: ArithRec a
@@ -193,251 +226,43 @@ instance Arith Float where arithRec = floatArith
 -- | 64 bit ordered doubles.
 instance Arith Double where arithRec = floatArith
 
--- | Helper function to update the current context.
-modifyCxt :: (Context -> Context) -> M Context
-modifyCxt f = do
-  cxt <- gets context
-  let a = f cxt
-  modify $ \st -> st{ context = a }
-  return cxt
-
--- | Add a string to the output of the current context.
-output :: String -> M ()
-output s = void $ modifyCxt $ \cxt -> cxt{ outputs = s : outputs cxt }
-      
--- | Output an LLVM instruction.
-instr :: [String] -> M ()
-instr = output . unwords
-
--- | Helper function for LLVM assignment instructions.
-assign :: Ty a => [String] -> I a
-assign xs = do
-  x <- instantiate
-  a <- x
-  instr $ [valof a, "="] ++ xs
-  return a
-
--- | A class is used to model parameters/arguments.
-class Args a where
-  instantiate :: M a
-  unArgs :: a -> M [V ()]
-
--- | Single argument.
-instance Ty a => Args (I a) where
-  instantiate = do
-    cxt <- modifyCxt $ \cxt -> cxt{ nextVar = succ $ nextVar cxt }
-    v <- mkV ("%v" ++ show (nextVar cxt))
-    return (return v)
-  unArgs x = ((: []) . unV) <$> x
-  
--- | Two arguments.
-instance (Args a, Args b) => Args (a,b) where
-  instantiate = (,) <$> instantiate <*> instantiate
-  unArgs (x,y) = (++) <$> unArgs x <*> unArgs y
-  
--- | Helper function to print out LLVM parameters.
-params :: [String] -> String
-params [] = "()"
-params xs = "(" ++ foldr1 comma xs ++ ")"
-
--- | Helper function to print out LLVM global names.
-global :: String -> String
-global = (++) "@"
-
--- | Internal function used for LLVM function definitions. The
--- argument with type (M b -> String) must be a function that doesn't
--- evaluate it's argument.
--- http://llvm.org/docs/LangRef.html#functions
-define :: Args a => String -> (a -> M b) -> (M b -> String) -> (b -> String) -> M ()
-define n f g h = whenUnknown n $ do
-  x <- instantiate
-  a <- unArgs x
-  instr ["define", g $ f x, global n, params $ fmap tyvalof a]
-  output "{"
-  b <- f x
-  instr ["ret", h b]
-  output "}"
-
--- | Convience function that pairs up defines and calls for LLVM
--- functions.  http://llvm.org/docs/LangRef.html#functions
-func :: (Args a, Ty b) => String -> (a -> I b) -> a -> I b
-func n f a = define n f ty tyvalof >> call n a
-  
--- | Convience function that pairs up defines and calls for LLVM
--- procedures.  http://llvm.org/docs/LangRef.html#functions
-func' :: Args a => String -> (a -> M ()) -> a -> M ()
-func' n f a = define n f (const "void") (const "void") >> call' n a
-
--- | Helper function that adds definitions and declarations to the
--- state if they haven't been seen before.
-whenUnknown :: String -> M () -> M ()
-whenUnknown n m = do
-  ns <- (fst . unzip) <$> gets namespace
-  when (n `notElem` ns) $ do
-    modify $ \st -> st{ context = initContext, contexts =  context st : contexts st }
-    m
-    modify $ \st -> st
-      { namespace = (n, reverse $ outputs $ context st) : namespace st
-      , context = head $ contexts st
-      , contexts = tail $ contexts st
-      }
-
--- | Internal function used for LLVM function call instruction.
--- http://llvm.org/docs/LangRef.html#call-instruction
-call :: (Args a, Ty b) => String -> a -> I b
-call n x =
-  let b = unArgs x >>= \a -> assign ["call", ty b, global n, params $ fmap tyvalof a] in b
-
--- | Internal function used for LLVM procedure call instruction.
--- http://llvm.org/docs/LangRef.html#call-instruction
-call' :: (Args a) => String -> a -> M ()
-call' n x = unArgs x >>= \a -> instr ["call", "void", global n, params $ fmap tyvalof a]
-
--- | Internal function used for LLVM function declarations.
--- functions.  http://llvm.org/docs/LangRef.html#functions
-declare :: (Args a) => String -> Type -> a -> M ()
-declare n t x = whenUnknown n $ do
-  a <- unArgs x
-  instr ["declare", t, global n, params $ fmap tyof a ]
-
--- | LLVM foreign function interface.
--- http://llvm.org/docs/LangRef.html#functions
-ffi :: (Args a, Ty b) => String -> a -> I b
-ffi n x = let b = declare n (ty b) x >> call n x in b
-  
--- | LLVM foreign procedure interface.
--- http://llvm.org/docs/LangRef.html#functions
-ffi' :: (Args a) => String -> a -> M ()
-ffi' n a = declare n "void" a >> call' n a
-
--- | Quick and dirty representation of LLVM labels.  http://llvm.org/docs/LangRef.html#label-type
-type Label = String
-
--- | Helper used for comma separated things.
-comma :: String -> String -> String
-comma x y = x ++ ", " ++ y
-
--- | Helper used for branching to labels.
-label :: String -> String
-label = (++) "label %"
-
--- | LLVM conditional br instruction. http://llvm.org/docs/LangRef.html#br-instruction
-br :: I Bool -> Label -> Label -> M ()
-br x y z = do
-  a <- x
-  instr ["br", tyvalof a `comma` label y `comma` label z]
-
--- | LLVM unconditional br instruction. http://llvm.org/docs/LangRef.html#br-instruction
-br' :: Label -> M ()
-br' x = instr ["br", label x]
-
--- | LLVM alloca instruction without the number of elements.
--- http://llvm.org/docs/LangRef.html#alloca-instruction
-alloca :: (Ty a) => I (Ptr a)
-alloca = alloca' (lit 1)
-
--- | LLVM alloca instruction with the number of elements (less polymorphic version).
--- http://llvm.org/docs/LangRef.html#alloca-instruction
-alloca' :: (Ty a) => I Int32 -> I (Ptr a)
-alloca' = alloca''
-
--- | LLVM alloca instruction with the number of elements.
--- http://llvm.org/docs/LangRef.html#alloca-instruction
-alloca'' :: (Ty a, IsInt b) => I b -> I (Ptr a)
-alloca'' x = let a = x >>= \b -> assign ["alloca", ty (load a) `comma` tyvalof b] in a
-
--- | LLVM load instruction. The documentation seems to be wrong.  What
--- works for me is: %val = load i32* %ptr, not %val = load i32, i32*.
--- %ptr.  http://llvm.org/docs/LangRef.html#load-instruction
-load :: Ty a => I (Ptr a) -> I a
-load x = x >>= \a -> assign ["load", tyvalof a]
-
--- | LLVM store instruction.
--- http://llvm.org/docs/LangRef.html#store-instruction
-store :: Ty a => I a -> I (Ptr a) -> M ()
-store x y = do
-  a <- x
-  p <- y
-  instr ["store", tyvalof a `comma` tyvalof p]
-
--- | LLVM getelementptr instruction.  Docs seem to be wrong.
--- http://llvm.org/docs/LangRef.html#getelementptr-instruction
-getelementptr' :: (Ty a, IsInt b) => I (Ptr a) -> I b -> I (Ptr a)
-getelementptr' x y = do
-  p <- x
-  i <- y
-  assign ["getelementptr", tyvalof p `comma` tyvalof i]
-
--- | LLVM getelementptr instruction (less polymorphic version).
--- http://llvm.org/docs/LangRef.html#getelementptr-instruction
-getelementptr :: (Ty a) => I (Ptr a) -> I Int32 -> I (Ptr a)
-getelementptr = getelementptr'
-
--- | Generate text from our monad.  This is the program generation
--- entry point.
--- | As an example:
---
--- >>> mainM $ \(argc, argv) -> add (lit 42) argc
--- 
--- define i32 @main (i32 %v0, i8** %v1)
--- {
--- %v2 = add i32 42, %v0
--- ret i32 %v2
--- }
-mainM :: ((I Int32, I (Ptr (Ptr Word8))) -> I Int32) -> IO ()
-mainM f = do
-  let st = execState (define "main" f ty tyvalof) $ St initContext [] []
-  writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
-  callCommand "cat t.ll"
-  callCommand "llc -fatal-assembler-warnings t.ll"
-  callCommand "clang --Wall -o t.exe t.s eel.c"
-  
--- | Construct a local unique label.
-newLabel :: M Label
-newLabel = do
-  cxt <- modifyCxt $ \cxt -> cxt{ nextLabel = succ $ nextLabel cxt }
-  return $ "L" ++ show (nextLabel cxt)
-
 -- | Helper function to implement binary operations.  LLVM instructions
 -- must be in SSA form.
-binop :: (Ty a, Ty b, Ty c) => String -> I a -> I b -> I c
-binop f x y = do
-  a <- x
-  b <- y
-  assign [f, tyvalof a `comma` valof b]
+binop :: (Ty a, Ty b, Ty c) => String -> V a -> V b -> I c
+binop f a b = assign [f, tyvalof a `comma` valof b]
         
 -- | Helper function to implement arithmetic operations.
-arith :: Arith a => (ArithRec a -> String) -> I a -> I a -> I a
+arith :: Arith a => (ArithRec a -> String) -> V a -> V a -> I a
 arith f = binop (f arithRec)
 
 -- | result = (f)add ty op1, op2
 -- http://llvm.org/docs/LangRef.html#add-instruction
 -- http://llvm.org/docs/LangRef.html#fadd-instruction
-add :: Arith a => I a -> I a -> I a
+add :: Arith a => V a -> V a -> I a
 add = arith _add
 
 -- | result = (f)sub ty op1, op2
 -- http://llvm.org/docs/LangRef.html#sub-instruction
 -- http://llvm.org/docs/LangRef.html#fsub-instruction
-sub :: Arith a => I a -> I a -> I a
+sub :: Arith a => V a -> V a -> I a
 sub = arith _sub
 
 -- | result = (f)mul ty op1, op2
 -- http://llvm.org/docs/LangRef.html#mul-instruction
 -- http://llvm.org/docs/LangRef.html#fmul-instruction
-mul :: Arith a => I a -> I a -> I a
+mul :: Arith a => V a -> V a -> I a
 mul = arith _mul
 
 -- | result = [u/f]div ty op1, op2
 -- http://llvm.org/docs/LangRef.html#div-instruction
 -- http://llvm.org/docs/LangRef.html#fdiv-instruction
-div :: Arith a => I a -> I a -> I a
+div :: Arith a => V a -> V a -> I a
 div = arith _div
 
 -- | result = [u/f]rem ty op1, op2
 -- http://llvm.org/docs/LangRef.html#rem-instruction
 -- http://llvm.org/docs/LangRef.html#frem-instruction
-rem :: Arith a => I a -> I a -> I a
+rem :: Arith a => V a -> V a -> I a
 rem = arith _rem
 
 -- | Bitwise operations.
@@ -450,28 +275,28 @@ data IsIntRec a = IsIntRec{ _shr :: String }
 
 -- | result = shl ty op1, op2
 -- http://llvm.org/docs/LangRef.html#shl-instruction
-shl :: IsInt a => I a -> I a -> I a
+shl :: IsInt a => V a -> V a -> I a
 shl = binop "shl"
 
 -- | result = [l/a]shr ty op1, op2
 -- http://llvm.org/docs/LangRef.html#lshr-instruction
 -- http://llvm.org/docs/LangRef.html#ashr-instruction
-shr :: IsInt a => I a -> I a -> I a
-shr (x :: I a) = binop (_shr (isIntRec :: IsIntRec a)) x
+shr :: IsInt a => V a -> V a -> I a
+shr (x :: V a) = binop (_shr (isIntRec :: IsIntRec a)) x
 
 -- | result = and ty op1, op2
 -- http://llvm.org/docs/LangRef.html#and-instruction
-and :: IsInt a => I a -> I a -> I a
+and :: IsInt a => V a -> V a -> I a
 and = binop "and"
 
 -- | result = or ty op1, op2
 -- http://llvm.org/docs/LangRef.html#or-instruction
-or :: IsInt a => I a -> I a -> I a
+or :: IsInt a => V a -> V a -> I a
 or = binop "or"
 
 -- | result = xor ty op1, op2
 -- http://llvm.org/docs/LangRef.html#xor-instruction
-xor :: IsInt a => I a -> I a -> I a
+xor :: IsInt a => V a -> V a -> I a
 xor = binop "xor"
 
 -- | IsIntRec helper for signed integer types.
@@ -513,43 +338,43 @@ data CmpRec a = CmpRec
   }
 
 -- | Helper function to implement comparison operations.
-cmp :: Cmp a => (CmpRec a -> String) -> I a -> I a -> I Bool
+cmp :: Cmp a => (CmpRec a -> String) -> V a -> V a -> I Bool
 cmp f = binop (f cmpRec)
 
 -- | result = [f/i]cmp [o]eq ty op1, op2
 -- http://llvm.org/docs/LangRef.html#icmp-instruction
 -- http://llvm.org/docs/LangRef.html#fcmp-instruction
-eq :: Cmp a => I a -> I a -> I Bool
+eq :: Cmp a => V a -> V a -> I Bool
 eq = cmp _eq
 
 -- | result = [f/i]cmp [o]ne ty op1, op2
 -- http://llvm.org/docs/LangRef.html#icmp-instruction
 -- http://llvm.org/docs/LangRef.html#fcmp-instruction
-ne :: Cmp a => I a -> I a -> I Bool
+ne :: Cmp a => V a -> V a -> I Bool
 ne = cmp _ne
 
 -- | result = [f/i]cmp [o/s/u]gt ty op1, op2
 -- http://llvm.org/docs/LangRef.html#icmp-instruction
 -- http://llvm.org/docs/LangRef.html#fcmp-instruction
-gt :: Cmp a => I a -> I a -> I Bool
+gt :: Cmp a => V a -> V a -> I Bool
 gt = cmp _gt
 
 -- | result = [f/i]cmp [o/s/u]ge ty op1, op2
 -- http://llvm.org/docs/LangRef.html#icmp-instruction
 -- http://llvm.org/docs/LangRef.html#fcmp-instruction
-ge :: Cmp a => I a -> I a -> I Bool
+ge :: Cmp a => V a -> V a -> I Bool
 ge = cmp _ge
 
 -- | result = [f/i]cmp [o/s/u]lt ty op1, op2
 -- http://llvm.org/docs/LangRef.html#icmp-instruction
 -- http://llvm.org/docs/LangRef.html#fcmp-instruction
-lt :: Cmp a => I a -> I a -> I Bool
+lt :: Cmp a => V a -> V a -> I Bool
 lt = cmp _lt
 
 -- | result = [f/i]cmp [o/s/u]le ty op1, op2
 -- http://llvm.org/docs/LangRef.html#icmp-instruction
 -- http://llvm.org/docs/LangRef.html#fcmp-instruction
-le :: Cmp a => I a -> I a -> I Bool
+le :: Cmp a => V a -> V a -> I Bool
 le = cmp _le
 
 -- | CmpRec helper for signed integer types.
@@ -626,10 +451,6 @@ instance Cast Int32 where cst _ = SInt 32
 instance Cast Float where cst _ = FP 32
 -- | 64 bit ordered doubles.
 instance Cast Double where cst _ = FP 64
-
--- | Internal function for (unsafely) forcing a change in type.
-unV :: V a -> V b
-unV (V a b) = V a b
   
 -- | polymorphic (unsafe) casting.
 -- http://llvm.org/docs/LangRef.html#trunc-to-instruction
@@ -641,10 +462,10 @@ unV (V a b) = V a b
 -- http://llvm.org/docs/LangRef.html#fptosi-to-instruction
 -- http://llvm.org/docs/LangRef.html#uitofp-to-instruction
 -- http://llvm.org/docs/LangRef.html#sitofp-to-instruction
-cast :: (Cast a, Cast b) => I a -> I b
-cast x = y
+cast :: (Cast a, Cast b) => V a -> I b
+cast x = b
   where
-    y = case (cst x, cst y) of
+    b = case (cst $ return x, cst b) of
       (SInt i, UInt j) | i > j -> to "trunc"
       (SInt i, SInt j) | i > j -> to "trunc"
       (SInt i, UInt j) | i < j -> to "sext"
@@ -661,7 +482,157 @@ cast x = y
       (FP _, UInt _) -> to "fptoui"
       (FP i, FP j) | i > j -> to "fptrunc"
       (FP i, FP j) | i < j -> to "fpext"
-      _ -> unV <$> x -- These types are LLVM equivalent.  Just change the EDSL types.
-    to s = do
-      a <- x
-      assign [s, tyvalof a, "to", ty y]
+      _ -> return $ unV x -- Types are LLVM equivalent.  Just change the EDSL type.
+    to s = assign [s, tyvalof x, "to", ty b]
+
+-- | Convience function that pairs up defines and calls for LLVM
+-- functions.  http://llvm.org/docs/LangRef.html#functions
+func :: (Args a, Ty b) => String -> (a -> I b) -> a -> I b
+func n f a = define n f ty tyvalof >> call n a
+  
+-- | Convience function that pairs up defines and calls for LLVM
+-- procedures.  http://llvm.org/docs/LangRef.html#functions
+func' :: Args a => String -> (a -> M ()) -> a -> M ()
+func' n f a = define n f (const "void") (const "void") >> call' n a
+
+-- | Internal function used for LLVM function definitions. The
+-- argument with type (M b -> String) must be a function that doesn't
+-- evaluate it's argument.
+-- http://llvm.org/docs/LangRef.html#functions
+define :: Args a => String -> (a -> M b) -> (M b -> String) -> (b -> String) -> M ()
+define n f g h = whenUnknown n $ do
+  x <- instantiate
+  instr ["define", g $ f x, global n, params $ tyvalof <$> unArgs x]
+  output "{"
+  b <- f x
+  instr ["ret", h b]
+  output "}"
+
+-- | Helper function that adds definitions and declarations to the
+-- state if they haven't been seen before.
+whenUnknown :: String -> M () -> M ()
+whenUnknown n m = do
+  ns <- (fst . unzip) <$> gets namespace
+  when (n `notElem` ns) $ do
+    modify $ \st -> st{ context = initContext, contexts =  context st : contexts st }
+    m
+    modify $ \st -> st
+      { namespace = (n, reverse $ outputs $ context st) : namespace st
+      , context = head $ contexts st
+      , contexts = tail $ contexts st
+      }
+
+-- | Internal function used for LLVM function call instruction.
+-- http://llvm.org/docs/LangRef.html#call-instruction
+call :: (Args a, Ty b) => String -> a -> I b
+call n x = b
+  where
+    b = assign ["call", ty b, global n, params $ tyvalof <$> unArgs x]
+
+-- | Internal function used for LLVM procedure call instruction.
+-- http://llvm.org/docs/LangRef.html#call-instruction
+call' :: (Args a) => String -> a -> M ()
+call' n x = instr ["call", "void", global n, params $ tyvalof <$> unArgs x]
+
+-- | LLVM foreign function interface.
+-- http://llvm.org/docs/LangRef.html#functions
+ffi :: (Args a, Ty b) => String -> a -> I b
+ffi n x = let b = declare n (ty b) x >> call n x in b
+  
+-- | LLVM foreign procedure interface.
+-- http://llvm.org/docs/LangRef.html#functions
+ffi' :: (Args a) => String -> a -> M ()
+ffi' n a = declare n "void" a >> call' n a
+
+-- | Internal function used for LLVM function declarations.
+-- functions.  http://llvm.org/docs/LangRef.html#functions
+declare :: (Args a) => String -> Type -> a -> M ()
+declare n t x = whenUnknown n $
+  instr ["declare", t, global n, params $ tyof <$> unArgs x ]
+
+-- | LLVM alloca instruction with the number of elements.
+-- http://llvm.org/docs/LangRef.html#alloca-instruction
+alloca :: (Ty a, IsInt b) => V b -> I (Ptr a)
+alloca n = let a = assign ["alloca", init (ty a) `comma` tyvalof n] in a
+-- ^ init removes the '*' symbol from the type
+
+-- | LLVM load instruction. The documentation seems to be wrong.  What
+-- works for me is: %val = load i32* %ptr, not %val = load i32, i32*.
+-- %ptr.  http://llvm.org/docs/LangRef.html#load-instruction
+load :: Ty a => V (Ptr a) -> I a
+load x = assign ["load", tyvalof x]
+
+-- | LLVM store instruction.
+-- http://llvm.org/docs/LangRef.html#store-instruction
+store :: Ty a => V a -> V (Ptr a) -> M ()
+store x p = instr ["store", tyvalof x `comma` tyvalof p]
+
+-- | LLVM getelementptr instruction.  Docs seem to be wrong.
+-- http://llvm.org/docs/LangRef.html#getelementptr-instruction
+getelementptr :: (Ty a, IsInt b) => V (Ptr a) -> V b -> I (Ptr a)
+getelementptr p i = assign ["getelementptr", tyvalof p `comma` tyvalof i]
+
+-- | Generate text from our monad.  This is the program generation
+-- entry point.
+-- | As an example:
+--
+-- >>> mainM $ \(argc, _argv) -> sub argc (lit 1)
+-- 
+-- define i32 @main (i32 %v0, i8** %v1)
+-- {
+-- %v2 = sub i32 %v0, 1
+-- ret i32 %v2
+-- }
+mainM :: ((V Int32, V (Ptr (Ptr Word8))) -> I Int32) -> IO ()
+mainM f = do
+  let st = execState (define "main" f ty tyvalof) $ St initContext [] []
+  writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
+  callCommand "cat t.ll"
+  callCommand "llc -fatal-assembler-warnings t.ll"
+  callCommand "clang -Weverything -o t.exe t.s eel.c"
+  callCommand "./t.exe"
+
+-- | Quick and dirty representation of LLVM labels.  http://llvm.org/docs/LangRef.html#label-type
+type Label = String
+
+-- | Helper used for branching to labels.
+label :: String -> String
+label = (++) "label %"
+
+-- | LLVM conditional br instruction. http://llvm.org/docs/LangRef.html#br-instruction
+br :: V Bool -> Label -> Label -> M ()
+br x y z = instr ["br", tyvalof x `comma` label y `comma` label z]
+
+-- | LLVM unconditional br instruction. http://llvm.org/docs/LangRef.html#br-instruction
+br' :: Label -> M ()
+br' x = instr ["br", label x]
+  
+-- | Construct a local unique label.
+newLabel :: M Label
+newLabel = do
+  cxt <- modifyCxt $ \cxt -> cxt{ nextLabel = succ $ nextLabel cxt }
+  return $ "L" ++ show (nextLabel cxt)
+
+-- | Helper function for LLVM assignment instructions.
+assign :: Ty a => [String] -> I a
+assign xs = do
+  a <- instantiate
+  instr $ [valof a, "="] ++ xs
+  return a
+
+-- | Output an LLVM instruction.
+instr :: [String] -> M ()
+instr = output . unwords
+  
+-- | Helper function to print out LLVM parameters.
+params :: [String] -> String
+params [] = "()"
+params xs = "(" ++ foldr1 comma xs ++ ")"
+
+-- | Helper function to print out LLVM global names.
+global :: String -> String
+global = (++) "@"
+
+-- | Helper used for comma separated things.
+comma :: String -> String -> String
+comma x y = x ++ ", " ++ y
