@@ -1,7 +1,7 @@
 .PHONY: test all lint doc clean
 
-all : test doc lint
-	stack install
+all : test # doc lint
+	# stack install
 
 lint :
 	hlint app src test

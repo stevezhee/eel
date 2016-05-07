@@ -554,7 +554,7 @@ declare n t x = whenUnknown n $
 -- http://llvm.org/docs/LangRef.html#alloca-instruction
 alloca :: (Ty a, IsInt b) => V b -> I (Ptr a)
 alloca n = let a = assign ["alloca", init (ty a) `comma` tyvalof n] in a
--- ^ init removes the '*' symbol from the type
+-- ^ 'init' here removes the '*' symbol from the type
 
 -- | LLVM load instruction. The documentation seems to be wrong.  What
 -- works for me is: %val = load i32* %ptr, not %val = load i32, i32*.
@@ -596,8 +596,11 @@ mainM f = do
 type Label = String
 
 -- | Helper used for branching to labels.
-label :: String -> String
+label :: Label -> String
 label = (++) "label %"
+
+block :: Label -> M ()
+block x = instr [x ++ ":"]
 
 -- | LLVM conditional br instruction. http://llvm.org/docs/LangRef.html#br-instruction
 br :: V Bool -> Label -> Label -> M ()
