@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <SDL.h>
+#include <SDL_ttf.h>
 
 void puti(int x) { printf("%d\n", x); }
 void putb(int x) { if(x == 0) {printf("false\n"); } else {printf("true\n"); } }
@@ -80,7 +81,7 @@ void present_sdl()
 SDL_RenderPresent(renderer);
 }
 
-void blit(SDL_Texture *tex, int x, int y, int w, int h)
+void blit(SDL_Texture *tex, int w, int h, int x, int y, double angle)
 {
   SDL_Rect rect;
   rect.x = x;
@@ -88,7 +89,62 @@ void blit(SDL_Texture *tex, int x, int y, int w, int h)
   rect.w = w;
   rect.h = h;
   
-  SDL_RenderCopy(renderer, tex, NULL, &rect);
+  SDL_RenderCopyEx(renderer, tex, NULL, &rect, angle, NULL, SDL_FLIP_NONE);
+}
+
+void font_gen(char *fn, int fntsz)
+{
+
+  SDL_Color col;
+  SDL_Surface *srfc;
+  TTF_Font *font;
+  int minx,maxx,miny,maxy,advance;
+  char cbuf[2];
+  char fnbuf[1024];
+
+  FILE *fp;
+  int sz;
+
+  memset(&col, 0xff, sizeof(col));
+
+  exitor(!TTF_Init());
+  exitor(font=TTF_OpenFont(fn, 32));
+
+  printf("metrics = [((\"%s\",%d), (%d,[\n", fn, fntsz, TTF_FontAscent(font));
+
+  cbuf[1] = '\0';
+
+  for(int i = 32; i < 127; ++i)
+    {
+      sprintf(fnbuf, "%s.%d.%d.rgba",fn,fntsz,i);
+
+      cbuf[0] = i;
+
+      exitor(!TTF_GlyphMetrics(font,cbuf[0],&minx,&maxx,&miny,&maxy,&advance));
+      exitor(srfc = TTF_RenderText_Blended(font, cbuf, col));
+      exitor(fp = fopen(fnbuf, "w"));
+      sz = srfc->w*srfc->h*4;
+      exitor(1 == fwrite(srfc->pixels, sz, 1, fp));
+      fclose(fp);
+      SDL_FreeSurface(srfc);
+      if (cbuf[0] == '\'' || cbuf[0] == '\\')
+      	{
+      	  printf("    , ('\\%c', ", cbuf[0]);
+      	}
+      else
+      	{
+      	  if(i == 32) {printf("      ('%c', ", cbuf[0]);}
+      	  else{printf("    , ('%c', ", cbuf[0]);}
+      	}
+      printf("((%d, %d), ",minx, maxx);
+      printf("(%d, %d), ",miny,maxy);
+      printf("%d)",advance);
+      printf(",(\"%s\", (%d, %d)))\n", fnbuf, srfc->w, srfc->h);
+    }
+  printf("    ]))\n");
+  printf("  ]\n");
+
+  TTF_CloseFont(font);
 }
 
 void init_sdl(int winX, int winY, int winW, int winH)

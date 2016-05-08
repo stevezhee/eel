@@ -640,11 +640,15 @@ mainM :: ((V Int32, V (Ptr (Ptr Char))) -> I Int32) -> IO ()
 mainM f = do
   let st = execState (define "main" f ty tyvalof) $ St initContext [] [] []
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
-  -- callCommand "cat t.ll"
-  callCommand "llc -fatal-assembler-warnings t.ll"
-  callCommand "clang -lSDL2 -I/usr/include/SDL2 -o t.exe t.s eel.c"
-  callCommand "./t.exe"
-
+  -- cmd "cat t.ll"
+  cmd "llc -fatal-assembler-warnings t.ll"
+  cmd "clang -lSDL2 -lSDL2_ttf -I/usr/include/SDL2 -o t.exe t.s eel.c"
+  cmd "./t.exe"
+  where
+    cmd s = do
+      putStrLn s
+      callCommand s
+      
 -- | Quick and dirty representation of LLVM labels.
 -- http://llvm.org/docs/LangRef.html#label-type
 type Label = String

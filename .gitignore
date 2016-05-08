@@ -1,5 +1,9 @@
 .stack-work
 *~
+*\.rgba
+*\.ttf
+*\.xcf
+*\.bmp
 *\.ll
 *\.out
 *\.s
