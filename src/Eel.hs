@@ -110,6 +110,8 @@ class Ty a where
 
 -- | booleans.
 instance Ty Bool where ty _ = "i1"
+-- | 8 bit unsigned characters.
+instance Ty Char where ty _ = "i8"
 -- | 8 bit signed integers.
 instance Ty Int8 where ty _ = "i8"
 -- | 16 bit signed integers.
@@ -152,6 +154,16 @@ instance (Args a, Args b) => Args (a,b) where
   instantiate = (,) <$> instantiate <*> instantiate
   unArgs (x,y) = unArgs x ++ unArgs y
 
+-- | Three arguments.
+instance (Args a, Args b, Args c) => Args (a,b,c) where
+  instantiate = (,,) <$> instantiate <*> instantiate <*> instantiate
+  unArgs (x,y,z) = unArgs x ++ unArgs y ++ unArgs z
+
+-- | Four arguments.
+instance (Args a, Args b, Args c, Args d) => Args (a,b,c,d) where
+  instantiate = (,,,) <$> instantiate <*> instantiate <*> instantiate <*> instantiate
+  unArgs (w,x,y,z) = unArgs w ++ unArgs x ++ unArgs y ++ unArgs z
+
 -- | A class will allow us to convert Haskell values into LLVM
 -- literals.
 class Ty a => Lit a where
@@ -164,6 +176,8 @@ mkV x = let v = V{ valof = x, tyof = ty (return v) } in v
 
 -- | booleans.
 instance Lit Bool where lit x = mkV $ if x then "true" else "false"
+-- | 8 bit unsigned characters.
+instance Lit Char where lit = mkV . show . fromEnum
 -- | 8 bit signed integers.
 instance Lit Int8 where lit = mkV . show
 -- | 16 bit signed integers.
@@ -419,6 +433,8 @@ floatCmp = CmpRec
   , _ne = "fcmp one"
   }
 
+-- | 8 bit unsigned characters.
+instance Cmp Char where cmpRec = wordCmp
 -- | 8 bit signed integers.
 instance Cmp Int8 where cmpRec = intCmp
 -- | 16 bit signed integers.
@@ -446,6 +462,8 @@ data Cst = SInt Int | UInt Int | FP Int deriving (Show, Eq)
 
 -- | booleans.
 instance Cast Bool where cst _ = UInt 1
+-- | 8 bit unsigned characters.
+instance Cast Char where cst _ = UInt 8
 -- | 8 bit unsigned integers.
 instance Cast Word8 where cst _ = UInt 8
 -- | 16 bit unsigned integers.
@@ -618,7 +636,7 @@ getelementptr p i = assign ["getelementptr", tyvalof p `comma` tyvalof i]
 -- %v2 = sub i32 %v0, 1
 -- ret i32 %v2
 -- }
-mainM :: ((V Int32, V (Ptr (Ptr Word8))) -> I Int32) -> IO ()
+mainM :: ((V Int32, V (Ptr (Ptr Char))) -> I Int32) -> IO ()
 mainM f = do
   let st = execState (define "main" f ty tyvalof) $ St initContext [] [] []
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st

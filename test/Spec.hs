@@ -4,15 +4,15 @@
 {-# LANGUAGE FlexibleInstances #-}
 module Main where
 
-import Eel hiding (alloca, mainM)
+import Eel hiding (mainM)
 import qualified Eel as E
 
-bar :: V Word8 -> I Word8
+bar :: Word' -> M Word'
 bar = func "bar" $ \x -> do
   i <- add x (lit 32)
   add i i
   
-foo :: (V Int32, V Word8) -> I Int32
+foo :: (Int', Word') -> M Int'
 foo = func "foo" $ \(x,y) -> do
   i <- bar y
   j <- cast x
@@ -21,22 +21,22 @@ foo = func "foo" $ \(x,y) -> do
   l <- ge k m
   cast l
 
-putu :: V Word32 -> M ()
+putu :: Word' -> M ()
 putu = ffi "putu"
-puti :: V Int32 -> M ()
+puti :: Int' -> M ()
 puti = ffi "puti"
-putf :: V Float -> M ()
+putf :: Float' -> M ()
 putf = ffi "putf"
 putb :: V Bool -> M ()
 putb = ffi "putb"
 
-init_sdl :: ((V Int32, V Int32), (V Int32, V Int32)) -> M ()
+init_sdl :: ((Int', Int'), (Int', Int')) -> M ()
 init_sdl = ffi "init_sdl"
 
-poll_sdl :: I Int32
+poll_sdl :: M Int'
 poll_sdl = ffi "poll_sdl" ()
 
-cleanup_sdl :: V Int32 -> M ()
+cleanup_sdl :: Int' -> M ()
 cleanup_sdl = ffi "cleanup_sdl"
 
 class Put a where put :: V a -> M ()
@@ -48,23 +48,23 @@ instance Put Float where put = putf
 true = lit True
 false = lit False
 
-alloca :: Ty a => I (Ptr a)
-alloca = E.alloca (lit 1 :: V Int32)
+alloc :: Ty a => M (Ptr' a)
+alloc = alloca (lit 1 :: Int')
 
-allocn :: Ty a => V Int32 -> I (Ptr a)
-allocn = E.alloca
+allocn :: Ty a => Int' -> M (Ptr' a)
+allocn = alloca
 
 mainM :: M () -> IO ()
 mainM m = E.mainM $ \(_argc, _argv) -> m >> return (lit 0)
 
-ix :: Ty a => V (Ptr a) -> V Int32 -> I (Ptr a)
+ix :: Ty a => V (Ptr a) -> Int' -> M (Ptr' a)
 ix = getelementptr
 
-instance Num (V Int32) where fromInteger = lit . fromInteger
-instance Num (V Float) where fromInteger = lit . fromInteger
-instance Num (V Word32) where fromInteger = lit . fromInteger
+instance Num Int' where fromInteger = lit . fromInteger
+instance Num Float' where fromInteger = lit . fromInteger
+instance Num Word' where fromInteger = lit . fromInteger
   
-while :: I Bool -> M ()
+while :: M Bool' -> M ()
 while x = do
   start_lbl <- newLabel
   done_lbl <- newLabel
@@ -74,32 +74,87 @@ while x = do
   br a start_lbl done_lbl
   block done_lbl
 
-oneof :: Ret r => M r -> [(I Bool, M r)] -> M r
+type Bool' = V Bool
+
+oneof :: Ret r => M r -> [(M Bool', M r)] -> M r
 oneof = foldr (\(r,a) b -> if' r a b)
+
+when x y = if' x y (return ())
 
 switch :: (Cmp a, Ret r) => I a -> (V a -> M r) -> [(I a, M r)] -> M r
 switch x f zs = do
   a <- x
   oneof (f a) [ (e >>= eq a, r) | (e, r) <- zs ]
 
+sdl_quit :: Int'
 sdl_quit = 256
+sdlk_up :: Int'
+sdlk_up = 1073741906
+sdlk_down :: Int'
+sdlk_down = 1073741905
+sdlk_left :: Int'
+sdlk_left = 1073741904
+sdlk_right :: Int'
+sdlk_right = 1073741903
 
-when x y = if' x y (return ())
+type Char' = V Char
+type Float' = V Float
+type Int' = V Int32
+type Word' = V Word32
 
+type Ptr' a = V (Ptr a)
+
+load_bmp :: (Ptr' Char, Ptr' Int32, Ptr' Int32) -> M (Ptr' Texture)
+load_bmp = ffi "load_bmp"
+                                    
+present_sdl :: M ()
+present_sdl = ffi "present_sdl" ()
+
+clear_sdl :: M ()
+clear_sdl = ffi "clear_sdl" ()
+
+data Texture
+instance Ty Texture where ty _ = ty (unused "Texture" :: M Int')
+
+blit :: (Ptr' Texture, (Int', Int'), (Int', Int')) -> M ()
+blit = ffi "blit"
+
+set_color :: (Int', Int', Int', Int') -> M ()
+set_color = ffi "set_color"
+
+cstring s0 = do
+  let s = s0 ++ ['\0']
+  p <- allocn $ lit $ fromIntegral $ length s
+  sequence_ [ ix p (lit i) >>= store (lit c) | (i,c) <- zip [0 ..] s ]
+  return p
+  
 main :: IO ()
 main = mainM $ do
-  init_sdl ((30,30), (1024, 1024))
-  -- switch (return 0)
-  --   (\(i :: V Int32) -> when (return false) (put i) >> return true)
-  --   [ (return 0, return false)
-  --   ]
-  while $ switch poll_sdl
-    (\i -> when (ne 0 i) (puti i) >> return true)
-    [ (return sdl_quit, return false)
-    ]
+  init_sdl ((30,30), (1024, 768))
+  set_color (0,0,0,0xff)
+  fn <- cstring "ship.bmp"
+  pw <- alloc
+  ph <- alloc
+  tex <- load_bmp (fn, pw, ph)
+  w <- load pw
+  h <- load ph
+  while $ do
+    clear_sdl
+    blit (tex, (100,100), (w, h))
+    present_sdl
+    switch poll_sdl
+      (\_ -> return true)
+      [ (return sdl_quit, return false)
+      , (return sdlk_up, puti 4 >> return true)
+      , (return sdlk_down, puti 5 >> return true)
+      , (return sdlk_left, puti 6 >> return true)
+      , (return sdlk_right, puti 7 >> return true)
+      ]
+  cleanup_sdl 0
+  
   -- oneof (puti 3) [(return false, puti 42), (return false, puti 13)]
-  -- if' (3 `gt` (2 :: V Int32)) (putb true) (putb false)
-  -- if' (3 `gt` (2 :: V Int32)) (return true) (return false) >>= putb
+  -- if' (3 `gt` (2 :: Int')) (putb true) (putb false)
+  -- if' (3 `gt` (2 :: Int')) (return true) (return false) >>= putb
   --   (return true)
   --   [ (sdl_quit, return false)
   --   ]
@@ -107,11 +162,10 @@ main = mainM $ do
   -- dowhile
   --   e <- poll_sdl
   --   (e == no_event || e /= quit_event)
-  cleanup_sdl 0
 
   -- putu (lit 0xffffffff)
   -- puti (lit 0xffffffff)
-  -- x <- cast (lit 0xffffffff :: V Word32)
+  -- x <- cast (lit 0xffffffff :: Word')
   -- putf x
   -- putb $ lit True
   -- putb $ lit False
