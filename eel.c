@@ -37,14 +37,35 @@ int poll_sdl()
   return 0;
 }
 
-SDL_Texture *load_bmp(char *fn, int *w, int *h)
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+#define rmask 0xff000000
+#define gmask 0x00ff0000
+#define bmask 0x0000ff00
+#define amask 0x000000ff
+#else
+#define rmask 0x000000ff
+#define gmask 0x0000ff00
+#define bmask 0x00ff0000
+#define amask 0xff000000
+#endif
+
+SDL_Texture *load_rgba(char *fn, int w, int h)
 {
   SDL_Surface *srfc;
   SDL_Texture *tex;
-  exitor(srfc = SDL_LoadBMP(fn));
+  int *pixels;
+  FILE *fp;
+  int sz = w*h*4;
+
+  exitor(pixels = malloc(sz));
+  exitor(fp = fopen(fn, "r"));
+  exitor(1 == fread(pixels, sz, 1, fp));
+  exitor(!fclose(fp));
+
+  exitor(srfc = SDL_CreateRGBSurfaceFrom(pixels, w, h, 32, w*4,
+					 rmask, gmask, bmask, amask));
   exitor(tex = SDL_CreateTextureFromSurface(renderer, srfc));
-  *w = srfc->w;
-  *h = srfc->h;
+  free(pixels);
   SDL_FreeSurface(srfc);
   return tex;
 }
