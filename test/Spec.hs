@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 -- {-# OPTIONS_GHC -Wall -fno-warn-missing-signatures #-}
 {-# OPTIONS_GHC -w #-}
@@ -22,6 +23,15 @@ foo = func "foo" $ \(x,y) -> do
   l <- ge k m
   cast l
 
+-- inc = void $ modify $ add 1
+  
+-- sputf s f = do
+  
+--   idx s i >>= store (char '.')
+--   inc pi
+--   modify pf $ mul 10
+--   idx s i >>= store (char '\0')
+  
 putu :: Word' -> M ()
 putu = ffi "putu"
 puti :: Int' -> M ()
@@ -65,11 +75,6 @@ allocn = alloca
 
 mainM :: M () -> IO ()
 mainM m = E.mainM $ \(_argc, _argv) -> m >> return (lit 0)
-
-instance Num Int' where fromInteger = lit . fromInteger
-instance Num Float' where fromInteger = lit . fromInteger
-instance Num Double' where fromInteger = lit . fromInteger
-instance Num Word' where fromInteger = lit . fromInteger
   
 while :: M Bool' -> M ()
 while x = do
@@ -210,8 +215,18 @@ blitString fnt s x0 y = do
         add x advance
     return r
 
+instance Num Int' where fromInteger = lit . fromInteger
+instance Num Float' where fromInteger = lit . fromInteger
+instance Num Double' where fromInteger = lit . fromInteger
+instance Num Word' where fromInteger = lit . fromInteger
+
+instance (Arith a, Lit a, Num a) => Num (I a) where
+  (+) x y = join $ add <$> x <*> y
+  fromInteger = return . lit . fromInteger
+    
 main :: IO ()
 main = mainM $ do
+  ((1 + 4) + (3 + 2)) >>= puti
   init_sdl ((30,550), (1280, 256))
 --  font_gen "LuckiestGuy.ttf" 36
   font <- loadFont "LuckiestGuy.ttf" 36
