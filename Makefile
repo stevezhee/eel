@@ -2,6 +2,7 @@
 
 all : test # doc lint
 	# stack install
+	./t.exe
 
 lint :
 	hlint app src test

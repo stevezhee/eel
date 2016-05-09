@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 #include <SDL.h>
-#include <SDL_ttf.h>
 
 void puti(int x) { printf("%d\n", x); }
+void putd(double x) { printf("%f\n", x); }
+void putl(unsigned long int x) { printf("%lu\n", x); }
 void putb(int x) { if(x == 0) {printf("false\n"); } else {printf("true\n"); } }
 void putu(unsigned int x) { printf("%u\n", x); }
 void putf(float x) { printf("%f\n", x); }
@@ -57,20 +59,22 @@ SDL_Texture *load_rgba(char *fn, int w, int h)
 {
   SDL_Surface *srfc;
   SDL_Texture *tex;
-  int *pixels;
-  FILE *fp;
-  int sz = w*h*4;
+  unsigned int *pixels;
+  int sz = w*h;
+  SDL_RWops *file;
+  unsigned int px;
 
-  exitor(pixels = malloc(sz));
-  exitor(fp = fopen(fn, "r"));
-  exitor(1 == fread(pixels, sz, 1, fp));
-  exitor(!fclose(fp));
+  if(sz == 0) return NULL;
+  exitor(pixels = malloc(sz*4));
+  exitor(file = SDL_RWFromFile(fn, "rb"));
+  exitor(sz == SDL_RWread(file, pixels, 4, sz));
+  exitor(!SDL_RWclose(file));
 
-  exitor(srfc = SDL_CreateRGBSurfaceFrom(pixels, w, h, 32, w*4,
-					 rmask, gmask, bmask, amask));
+  exitor(srfc = SDL_CreateRGBSurfaceFrom(pixels, w, h, 32, w*4, rmask,gmask,bmask,amask));
   exitor(tex = SDL_CreateTextureFromSurface(renderer, srfc));
-  free(pixels);
   SDL_FreeSurface(srfc);
+  free(pixels);
+	 
   return tex;
 }
 
@@ -95,61 +99,6 @@ void blit(SDL_Texture *tex, int w, int h, int x, int y, double angle)
   SDL_RenderCopyEx(renderer, tex, NULL, &rect, angle, NULL, SDL_FLIP_NONE);
 }
 
-void font_gen(char *fn, int fntsz)
-{
-
-  SDL_Color col;
-  SDL_Surface *srfc;
-  TTF_Font *font;
-  int minx,maxx,miny,maxy,advance;
-  char cbuf[2];
-  char fnbuf[1024];
-
-  FILE *fp;
-  int sz;
-
-  memset(&col, 0xff, sizeof(col));
-
-  exitor(!TTF_Init());
-  exitor(font=TTF_OpenFont(fn, 32));
-
-  printf("metrics = [((\"%s\",%d), (%d,[\n", fn, fntsz, TTF_FontAscent(font));
-
-  cbuf[1] = '\0';
-
-  for(char i = 32; i < 127; ++i)
-    {
-      sprintf(fnbuf, "%s.%d.%d.rgba",fn,fntsz,i);
-
-      cbuf[0] = i;
-
-      exitor(!TTF_GlyphMetrics(font,cbuf[0],&minx,&maxx,&miny,&maxy,&advance));
-      exitor(srfc = TTF_RenderText_Blended(font, cbuf, col));
-      exitor(fp = fopen(fnbuf, "w"));
-      sz = srfc->w*srfc->h*4;
-      exitor(1 == fwrite(srfc->pixels, sz, 1, fp));
-      fclose(fp);
-      SDL_FreeSurface(srfc);
-      if (cbuf[0] == '\'' || cbuf[0] == '\\')
-      	{
-      	  printf("    , ('\\%c', ", cbuf[0]);
-      	}
-      else
-      	{
-      	  if(i == 32) {printf("      ('%c', ", cbuf[0]);}
-      	  else{printf("    , ('%c', ", cbuf[0]);}
-      	}
-      printf("((%d, %d), ",minx, maxx);
-      printf("(%d, %d), ",miny,maxy);
-      printf("%d)",advance);
-      printf(",(\"%s\", (%d, %d)))\n", fnbuf, srfc->w, srfc->h);
-    }
-  printf("    ]))\n");
-  printf("  ]\n");
-
-  TTF_CloseFont(font);
-}
-
 void init_sdl(int winX, int winY, int winW, int winH)
 {
   exitor(!SDL_Init(SDL_INIT_VIDEO));
@@ -162,4 +111,14 @@ void init_sdl(int winX, int winY, int winW, int winH)
 void set_color(int r, int g, int b, int a)
 {
   SDL_SetRenderDrawColor( renderer, r, g, b, a );
+}
+
+int eel_main(char argc, char *argv[]);
+
+#ifdef __cplusplus
+extern "C"
+#endif
+int main(int argc, char *argv[])
+{
+  return eel_main(argc, argv);
 }

@@ -124,6 +124,8 @@ instance Ty Word8 where ty _ = "i8"
 instance Ty Word16 where ty _ = "i16"
 -- | 32 bit unsigned integers.
 instance Ty Word32 where ty _ = "i32"
+-- | 64 bit unsigned integers.
+instance Ty Word64 where ty _ = "i64"
 -- | 32 bit ordered floats.  Does Haskell have sized Floats?
 instance Ty Float where ty _ = "float"
 -- | 64 bit ordered doubles.  Does Haskell have sized Doubles?
@@ -190,6 +192,8 @@ instance Lit Word8 where lit = mkV . show
 instance Lit Word16 where lit = mkV . show
 -- | 32 bit unsigned integers.
 instance Lit Word32 where lit = mkV . show
+-- | 64 bit unsigned integers.
+instance Lit Word64 where lit = mkV . show
 -- | 32 bit ordered floats.  Currently broken.
 instance Lit Float where lit = mkV . show -- BAL: implement IEEE 754 for LLVM
 -- | 64 bit ordered doubles.  Currently broken.
@@ -246,6 +250,8 @@ instance Arith Word8 where arithRec = wordArith
 instance Arith Word16 where arithRec = wordArith
 -- | 32 bit unsigned integers.
 instance Arith Word32 where arithRec = wordArith
+-- | 64 bit unsigned integers.
+instance Arith Word64 where arithRec = wordArith
 -- | 32 bit ordered floats.
 instance Arith Float where arithRec = floatArith
 -- | 64 bit ordered doubles.
@@ -346,6 +352,8 @@ instance IsInt Word8 where isIntRec = wordIsInt
 instance IsInt Word16 where isIntRec = wordIsInt
 -- | 32 bit unsigned integers.
 instance IsInt Word32 where isIntRec = wordIsInt
+-- | 64 bit unsigned integers.
+instance IsInt Word64 where isIntRec = wordIsInt
 
 -- | LLVM comparison primitives.
 class Ty a => Cmp a where
@@ -447,6 +455,8 @@ instance Cmp Word8 where cmpRec = wordCmp
 instance Cmp Word16 where cmpRec = wordCmp
 -- | 32 bit unsigned integers.
 instance Cmp Word32 where cmpRec = wordCmp
+-- | 64 bit unsigned integers.
+instance Cmp Word64 where cmpRec = wordCmp
 -- | 32 bit ordered floats.
 instance Cmp Float where cmpRec = floatCmp
 -- | 64 bit ordered doubles.
@@ -470,6 +480,8 @@ instance Cast Word8 where cst _ = UInt 8
 instance Cast Word16 where cst _ = UInt 16
 -- | 32 bit unsigned integers.
 instance Cast Word32 where cst _ = UInt 32
+-- | 64 bit unsigned integers.
+instance Cast Word64 where cst _ = UInt 64
 -- | 8 bit signed integers.
 instance Cast Int8 where cst _ = SInt 8
 -- | 16 bit signed integers.
@@ -638,12 +650,13 @@ getelementptr p i = assign ["getelementptr", tyvalof p `comma` tyvalof i]
 -- }
 mainM :: ((V Int32, V (Ptr (Ptr Char))) -> I Int32) -> IO ()
 mainM f = do
-  let st = execState (define "main" f ty tyvalof) $ St initContext [] [] []
+  let st = execState (define "eel_main" f ty tyvalof) $ St initContext [] [] []
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
   -- cmd "cat t.ll"
   cmd "llc -fatal-assembler-warnings t.ll"
-  cmd "clang -lSDL2 -lSDL2_ttf -I/usr/include/SDL2 -o t.exe t.s eel.c"
-  cmd "./t.exe"
+  -- cmd "clang -I/usr/include/SDL2 -o t.exe t.s eel.c -lSDL2"
+  cmd "clang -I/usr/include/SDL2 -o t.exe t.s eel.c -lcygwin -lSDL2main -lSDL2"
+  -- cmd "./t.exe"
   where
     cmd s = do
       putStrLn s

@@ -1,36 +1,13 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ScopedTypeVariables #-}
--- {-# OPTIONS_GHC -Wall -fno-warn-missing-signatures #-}
 {-# OPTIONS_GHC -w #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Main where
 
+import Prelude hiding (div)
 import Eel hiding (mainM)
 import qualified Eel as E
 import Control.Monad hiding (when)
-
-bar :: Word' -> M Word'
-bar = func "bar" $ \x -> do
-  i <- add x (lit 32)
-  add i i
-  
-foo :: (Int', Word') -> M Int'
-foo = func "foo" $ \(x,y) -> do
-  i <- bar y
-  j <- cast x
-  k <- shr i j
-  m <- bar $ lit 11
-  l <- ge k m
-  cast l
-
--- inc = void $ modify $ add 1
-  
--- sputf s f = do
-  
---   idx s i >>= store (char '.')
---   inc pi
---   modify pf $ mul 10
---   idx s i >>= store (char '\0')
   
 putu :: Word' -> M ()
 putu = ffi "putu"
@@ -38,6 +15,10 @@ puti :: Int' -> M ()
 puti = ffi "puti"
 putf :: Float' -> M ()
 putf = ffi "putf"
+putd :: Double' -> M ()
+putd = ffi "putd"
+putl :: Word64' -> M ()
+putl = ffi "putl"
 putb :: Bool' -> M ()
 putb = ffi "putb"
 puts :: String' -> M ()
@@ -86,8 +67,6 @@ while x = do
   br a start_lbl done_lbl
   block done_lbl
 
-type Bool' = V Bool
-
 oneof :: Ret r => M r -> [(M Bool', M r)] -> M r
 oneof = foldr (\(r,a) b -> if' r a b)
 
@@ -95,9 +74,7 @@ when :: I Bool -> M () -> M ()
 when x y = if' x y (return ())
 
 switch :: (Cmp a, Ret r) => I a -> (V a -> M r) -> [(I a, M r)] -> M r
-switch x f zs = do
-  a <- x
-  oneof (f a) [ (e >>= eq a, r) | (e, r) <- zs ]
+switch x f zs = x >>= \a -> oneof (f a) [ (eq a =<< e, r) | (e, r) <- zs ]
 
 sdl_quit :: Int'
 sdl_quit = 256
@@ -110,13 +87,15 @@ sdlk_left = 1073741904
 sdlk_right :: Int'
 sdlk_right = 1073741903
 
+type Bool' = V Bool
 type Char' = V Char
 type Float' = V Float
 type Double' = V Double
 type Int' = V Int32
 type Word' = V Word32
-
+type Word64' = V Word64
 type Ptr' a = V (Ptr a)
+type String' = Ptr' Char
 
 load_rgba :: (String', (Int', Int')) -> M (Ptr' Texture)
 load_rgba = ffi "load_rgba"
@@ -151,7 +130,7 @@ new x = do
 newn :: Ty a => [V a] -> M (Ptr' a)
 newn xs = do
   p <- allocn $ lit $ fromIntegral $ length xs
-  sequence_ [ ix p (lit i) >>= store x | (i,x) <- zip [0 ..] xs ]
+  sequence_ [ store x =<< ix p (lit i) | (i,x) <- zip [0 ..] xs ]
   return p
 
 ix :: Ty a => V (Ptr a) -> Int' -> M (Ptr' a)
@@ -164,81 +143,93 @@ modify p f = do
   store a' p
   return a
 
-load_tex (fn, w, h) = do
-  s <- cstring fn
-  load_rgba (s, (lit w, lit h))
-  
-type String' = Ptr' Char
-
-font_gen :: String -> Int32 -> M ()
-font_gen fn sz = do
-  font <- cstring fn
-  ffi "font_gen" (font, lit sz)
+load_tex :: (FilePath, (Int32, Int32)) -> M (Ptr' Texture, (Int', Int'))
+load_tex (fn, (w, h)) = do
+  let sz = (lit w, lit h)
+  tex <- cstring fn >>= \s -> load_rgba (s, sz)
+  return (tex, sz)
 
 loadFont :: String -> Int32 -> M Font
 loadFont nm pt = do
   let fid = (nm,pt)
-  let (ascent, chs) =
+  let chs =
         maybe (error $ "unknown font:" ++ show fid) id $ lookup fid metrics
   let n = lit $ fromIntegral $ length chs
   tex_arr <- allocn n
-  gs@[w_arr, h_arr, xmin_arr, advance_arr] <- sequence $ replicate 4 $ allocn n
+  gs@[w_arr, h_arr, left_arr, top_arr, advance_arr] <-
+    sequence $ replicate 5 $ allocn n
 
   let fnt = (tex_arr, gs)
 
-  let loadGlyph (i, (_, ((xmin, _), (ymin, ymax), adv), (fn, (w, h)))) = do
-        let f a b = ix b (lit i) >>= store (lit a)
-        s <- cstring fn
-        tex <- load_rgba (s, (lit w, lit h))
-        ix tex_arr (lit i) >>= store tex
-        f w w_arr
-        f h h_arr
-        f xmin xmin_arr
-        f adv advance_arr
+  let loadGlyph (i, (_, left, top, adv, (fn, (w,h)))) = do
+        let f :: Ty a => Ptr' a -> I (Ptr a)
+            f a = ix a (lit i)
+        (tex, (w', h')) <- load_tex (fn, (w, h))
+        store tex =<< f tex_arr
+        store w' =<< f w_arr
+        store h' =<< f h_arr
+        store (lit left) =<< f left_arr
+        store (lit top) =<< f top_arr
+        store (lit adv) =<< f advance_arr
         
   mapM_ loadGlyph $ zip [0 :: Int32 .. ] chs
   return fnt
+
+inc :: (Arith a, Lit a, Num a) => Ptr' a -> I a
+inc p = modify p $ add 1
+dec :: (Arith a, Lit a, Num a) => Ptr' a -> I a
+dec p = modify p $ flip sub 1
 
 blitString :: Font -> String' -> Int' -> Int' -> M ()
 blitString fnt s x0 y = do
   pi <- new 0
   px <- new x0
   while $ do
-    i <- modify pi $ add 1
-    c <- ix s i >>= load
+    i <- inc pi
+    c <- load =<< ix s i
     r <- ne c $ lit '\0'
     when (return r) $ do
       void $ modify px $ \x -> do
-        (tex, [w, h, xmin, advance]) <- lookupChar fnt c
-        x' <- add x xmin
-        blit (tex, (w, h), (x', y, 0))
-        add x advance
+        (tex, [w, h, left, top, advance]) <- lookupChar fnt c
+        x' <- add left x
+        y' <- add top y
+        blit (tex, (w, h), (x', y', 0))
+        add advance x
     return r
 
-instance Num Int' where fromInteger = lit . fromInteger
-instance Num Float' where fromInteger = lit . fromInteger
-instance Num Double' where fromInteger = lit . fromInteger
-instance Num Word' where fromInteger = lit . fromInteger
+instance (Lit a, Num a) => Num (V a) where
+  fromInteger = lit . fromInteger
+  -- (+) x y = -- BAL: we need an eval function so that we can turn an I a
+  -- into V a when I a can be evaluated at compile time.
 
 instance (Arith a, Lit a, Num a) => Num (I a) where
-  (+) x y = join $ add <$> x <*> y
   fromInteger = return . lit . fromInteger
-    
+  (+) x y = join $ add <$> x <*> y
+  (-) x y = join $ sub <$> x <*> y
+  (*) x y = join $ mul <$> x <*> y
+
+sdl_getperformancecounter :: M Word64'
+sdl_getperformancecounter = ffi "SDL_GetPerformanceCounter" ()
+
+sdl_getperformancefrequency :: M Word64'
+sdl_getperformancefrequency = ffi "SDL_GetPerformanceFrequency" ()
+
 main :: IO ()
 main = mainM $ do
-  ((1 + 4) + (3 + 2)) >>= puti
+  puti =<< ((1 + 4) + (3 + 2))
   init_sdl ((30,550), (1280, 256))
---  font_gen "LuckiestGuy.ttf" 36
   font <- loadFont "LuckiestGuy.ttf" 36
   set_color (0,0x30,0,0xff)
-  fn <- cstring "ship.bmp.rgba"
-  let sz = (64, 56)
-  tex <- load_rgba (fn, sz)
+  (tex,sz) <- load_tex ("ship.png.rgba", (64, 56))
   px <- new 100
   pr <- new 90
   pvx <- new 0
   pvr <- new 0
-  s <- cstring "hello, world"
+  u <- cstring "Hello, world."
+  sdl_getperformancecounter >>= putl
+  perf_freq <- cast =<< sdl_getperformancefrequency
+  t0 <- new 0
+  t1 <- new 0
   while $ do
     -- update
     vx <- load pvx
@@ -250,18 +241,22 @@ main = mainM $ do
     x <- load px
     r <- load pr
     blit (tex, sz, (x,100,r))
-    blitString font s 10 40
+    blitString font u 10 140
     present_sdl
+    sdl_getperformancecounter >>= flip store t1
+    delta_t <- cast =<< ((load t1) - (load t0))
+    putf =<< div delta_t perf_freq
     -- sleep
     sdl_delay 16
+    sdl_getperformancecounter >>= flip store t0
     -- input
     switch poll_sdl
       (\_ -> return true)
       [ (return sdl_quit, return false)
-      , (return sdlk_up, (modify pvx (add 1)) >> return true)
-      , (return sdlk_down, (modify pvx (`sub` 1)) >> return true)
-      , (return sdlk_left, (modify pvr (`sub` 1)) >> return true)
-      , (return sdlk_right, (modify pvr $ add 1) >> return true)
+      , (return sdlk_up, inc pvx >> return true)
+      , (return sdlk_down, dec pvx >> return true)
+      , (return sdlk_left, dec pvr >> return true)
+      , (return sdlk_right, inc pvr >> return true)
       ]
   cleanup_sdl 0
 
@@ -270,126 +265,11 @@ type Glyph = (Ptr' Texture, [Int'])
   
 lookupChar :: Font -> Char' -> M Glyph
 lookupChar (x, ys) c = do
-  n <- cast c
-  i <- sub n 32
-  a <- ix x i >>= load
-  bs <- mapM (\y -> ix y i >>= load) ys
+  i <- cast c - 32
+  a <- load =<< ix x i
+  bs <- mapM (\y -> load =<< ix y i) ys
   return (a, bs)
 
-metrics :: [((FilePath, Int32), (Int32, [(Char, ((Int32, Int32), (Int32, Int32), Int32), (FilePath, (Int32, Int32)))]))]
-metrics = [(("LuckiestGuy.ttf",36), (23,[
-      (' ', ((0, 0), (0, 0), 6),("LuckiestGuy.ttf.36.32.rgba", (6, 33)))
-    , ('!', ((0, 9), (-2, 24), 9),("LuckiestGuy.ttf.36.33.rgba", (9, 33)))
-    , ('"', ((0, 16), (14, 26), 15),("LuckiestGuy.ttf.36.34.rgba", (16, 33)))
-    , ('#', ((0, 19), (2, 20), 19),("LuckiestGuy.ttf.36.35.rgba", (19, 33)))
-    , ('$', ((0, 14), (-3, 25), 14),("LuckiestGuy.ttf.36.36.rgba", (14, 33)))
-    , ('%', ((0, 23), (1, 21), 23),("LuckiestGuy.ttf.36.37.rgba", (23, 33)))
-    , ('&', ((0, 21), (0, 22), 20),("LuckiestGuy.ttf.36.38.rgba", (21, 33)))
-    , ('\'', ((0, 8), (15, 26), 7),("LuckiestGuy.ttf.36.39.rgba", (8, 33)))
-    , ('(', ((0, 14), (-3, 25), 12),("LuckiestGuy.ttf.36.40.rgba", (14, 33)))
-    , (')', ((-1, 12), (-3, 25), 12),("LuckiestGuy.ttf.36.41.rgba", (13, 33)))
-    , ('*', ((0, 17), (7, 23), 17),("LuckiestGuy.ttf.36.42.rgba", (17, 33)))
-    , ('+', ((0, 14), (3, 17), 15),("LuckiestGuy.ttf.36.43.rgba", (15, 33)))
-    , (',', ((0, 7), (-3, 7), 7),("LuckiestGuy.ttf.36.44.rgba", (7, 33)))
-    , ('-', ((1, 12), (8, 14), 12),("LuckiestGuy.ttf.36.45.rgba", (12, 33)))
-    , ('.', ((0, 7), (-1, 7), 7),("LuckiestGuy.ttf.36.46.rgba", (7, 33)))
-    , ('/', ((0, 16), (-2, 24), 16),("LuckiestGuy.ttf.36.47.rgba", (16, 33)))
-    , ('0', ((0, 20), (-1, 23), 20),("LuckiestGuy.ttf.36.48.rgba", (20, 33)))
-    , ('1', ((-1, 12), (0, 23), 12),("LuckiestGuy.ttf.36.49.rgba", (13, 33)))
-    , ('2', ((0, 16), (0, 24), 16),("LuckiestGuy.ttf.36.50.rgba", (16, 33)))
-    , ('3', ((0, 17), (-1, 24), 17),("LuckiestGuy.ttf.36.51.rgba", (17, 33)))
-    , ('4', ((0, 17), (0, 24), 17),("LuckiestGuy.ttf.36.52.rgba", (17, 33)))
-    , ('5', ((0, 17), (-1, 23), 17),("LuckiestGuy.ttf.36.53.rgba", (17, 33)))
-    , ('6', ((0, 19), (-1, 24), 18),("LuckiestGuy.ttf.36.54.rgba", (19, 33)))
-    , ('7', ((0, 16), (0, 23), 16),("LuckiestGuy.ttf.36.55.rgba", (16, 33)))
-    , ('8', ((0, 18), (-1, 23), 18),("LuckiestGuy.ttf.36.56.rgba", (18, 33)))
-    , ('9', ((0, 18), (0, 23), 18),("LuckiestGuy.ttf.36.57.rgba", (18, 33)))
-    , (':', ((0, 8), (-1, 17), 8),("LuckiestGuy.ttf.36.58.rgba", (8, 33)))
-    , (';', ((0, 8), (-3, 17), 8),("LuckiestGuy.ttf.36.59.rgba", (8, 33)))
-    , ('<', ((0, 14), (1, 21), 15),("LuckiestGuy.ttf.36.60.rgba", (15, 33)))
-    , ('=', ((1, 12), (3, 16), 13),("LuckiestGuy.ttf.36.61.rgba", (13, 33)))
-    , ('>', ((0, 14), (1, 21), 15),("LuckiestGuy.ttf.36.62.rgba", (15, 33)))
-    , ('?', ((0, 18), (-2, 23), 18),("LuckiestGuy.ttf.36.63.rgba", (18, 33)))
-    , ('@', ((1, 21), (1, 21), 21),("LuckiestGuy.ttf.36.64.rgba", (21, 33)))
-    , ('A', ((-1, 21), (0, 23), 20),("LuckiestGuy.ttf.36.65.rgba", (22, 33)))
-    , ('B', ((0, 19), (-1, 23), 19),("LuckiestGuy.ttf.36.66.rgba", (19, 33)))
-    , ('C', ((0, 17), (0, 23), 16),("LuckiestGuy.ttf.36.67.rgba", (17, 33)))
-    , ('D', ((0, 19), (0, 23), 19),("LuckiestGuy.ttf.36.68.rgba", (19, 33)))
-    , ('E', ((0, 16), (0, 23), 15),("LuckiestGuy.ttf.36.69.rgba", (16, 33)))
-    , ('F', ((0, 16), (0, 23), 16),("LuckiestGuy.ttf.36.70.rgba", (16, 33)))
-    , ('G', ((0, 20), (-1, 24), 20),("LuckiestGuy.ttf.36.71.rgba", (20, 33)))
-    , ('H', ((0, 20), (-1, 23), 20),("LuckiestGuy.ttf.36.72.rgba", (20, 33)))
-    , ('I', ((0, 10), (0, 22), 10),("LuckiestGuy.ttf.36.73.rgba", (10, 33)))
-    , ('J', ((-1, 16), (-1, 23), 16),("LuckiestGuy.ttf.36.74.rgba", (17, 33)))
-    , ('K', ((0, 21), (-1, 23), 20),("LuckiestGuy.ttf.36.75.rgba", (21, 33)))
-    , ('L', ((0, 15), (0, 23), 14),("LuckiestGuy.ttf.36.76.rgba", (15, 33)))
-    , ('M', ((0, 25), (-1, 23), 25),("LuckiestGuy.ttf.36.77.rgba", (25, 33)))
-    , ('N', ((0, 23), (0, 23), 23),("LuckiestGuy.ttf.36.78.rgba", (23, 33)))
-    , ('O', ((0, 21), (0, 22), 20),("LuckiestGuy.ttf.36.79.rgba", (21, 33)))
-    , ('P', ((0, 19), (-1, 23), 19),("LuckiestGuy.ttf.36.80.rgba", (19, 33)))
-    , ('Q', ((0, 22), (-3, 23), 22),("LuckiestGuy.ttf.36.81.rgba", (22, 33)))
-    , ('R', ((0, 20), (0, 23), 19),("LuckiestGuy.ttf.36.82.rgba", (20, 33)))
-    , ('S', ((0, 17), (-1, 24), 17),("LuckiestGuy.ttf.36.83.rgba", (17, 33)))
-    , ('T', ((0, 18), (0, 23), 17),("LuckiestGuy.ttf.36.84.rgba", (18, 33)))
-    , ('U', ((0, 20), (-1, 22), 20),("LuckiestGuy.ttf.36.85.rgba", (20, 33)))
-    , ('V', ((-1, 20), (-1, 23), 20),("LuckiestGuy.ttf.36.86.rgba", (21, 33)))
-    , ('W', ((0, 29), (-1, 23), 29),("LuckiestGuy.ttf.36.87.rgba", (29, 33)))
-    , ('X', ((-1, 20), (0, 23), 19),("LuckiestGuy.ttf.36.88.rgba", (21, 33)))
-    , ('Y', ((0, 21), (-1, 22), 19),("LuckiestGuy.ttf.36.89.rgba", (21, 33)))
-    , ('Z', ((0, 16), (0, 23), 16),("LuckiestGuy.ttf.36.90.rgba", (16, 33)))
-    , ('[', ((0, 12), (-3, 25), 12),("LuckiestGuy.ttf.36.91.rgba", (12, 33)))
-    , ('\\', ((0, 16), (-2, 24), 16),("LuckiestGuy.ttf.36.92.rgba", (16, 33)))
-    , (']', ((-1, 11), (-3, 25), 12),("LuckiestGuy.ttf.36.93.rgba", (13, 33)))
-    , ('^', ((0, 16), (10, 23), 16),("LuckiestGuy.ttf.36.94.rgba", (16, 33)))
-    , ('_', ((-1, 10), (-7, -1), 10),("LuckiestGuy.ttf.36.95.rgba", (11, 33)))
-    , ('`', ((0, 10), (21, 30), 9),("LuckiestGuy.ttf.36.96.rgba", (10, 33)))
-    , ('a', ((-1, 21), (0, 23), 20),("LuckiestGuy.ttf.36.97.rgba", (22, 33)))
-    , ('b', ((0, 19), (-1, 23), 19),("LuckiestGuy.ttf.36.98.rgba", (19, 33)))
-    , ('c', ((0, 17), (-1, 23), 16),("LuckiestGuy.ttf.36.99.rgba", (17, 33)))
-    , ('d', ((0, 19), (0, 22), 19),("LuckiestGuy.ttf.36.100.rgba", (19, 33)))
-    , ('e', ((0, 19), (-1, 23), 18),("LuckiestGuy.ttf.36.101.rgba", (19, 33)))
-    , ('f', ((0, 16), (0, 23), 16),("LuckiestGuy.ttf.36.102.rgba", (16, 33)))
-    , ('g', ((0, 20), (-1, 23), 20),("LuckiestGuy.ttf.36.103.rgba", (20, 33)))
-    , ('h', ((0, 20), (0, 23), 20),("LuckiestGuy.ttf.36.104.rgba", (20, 33)))
-    , ('i', ((0, 9), (0, 22), 9),("LuckiestGuy.ttf.36.105.rgba", (9, 33)))
-    , ('j', ((-1, 16), (-1, 23), 16),("LuckiestGuy.ttf.36.106.rgba", (17, 33)))
-    , ('k', ((0, 20), (-1, 23), 19),("LuckiestGuy.ttf.36.107.rgba", (20, 33)))
-    , ('l', ((0, 15), (0, 23), 14),("LuckiestGuy.ttf.36.108.rgba", (15, 33)))
-    , ('m', ((0, 29), (0, 23), 29),("LuckiestGuy.ttf.36.109.rgba", (29, 33)))
-    , ('n', ((0, 21), (0, 23), 21),("LuckiestGuy.ttf.36.110.rgba", (21, 33)))
-    , ('o', ((0, 21), (1, 22), 20),("LuckiestGuy.ttf.36.111.rgba", (21, 33)))
-    , ('p', ((0, 19), (-1, 23), 19),("LuckiestGuy.ttf.36.112.rgba", (19, 33)))
-    , ('q', ((0, 22), (-3, 23), 22),("LuckiestGuy.ttf.36.113.rgba", (22, 33)))
-    , ('r', ((0, 20), (0, 23), 19),("LuckiestGuy.ttf.36.114.rgba", (20, 33)))
-    , ('s', ((0, 17), (-1, 23), 17),("LuckiestGuy.ttf.36.115.rgba", (17, 33)))
-    , ('t', ((0, 18), (0, 23), 17),("LuckiestGuy.ttf.36.116.rgba", (18, 33)))
-    , ('u', ((0, 20), (-1, 22), 20),("LuckiestGuy.ttf.36.117.rgba", (20, 33)))
-    , ('v', ((-1, 20), (0, 23), 20),("LuckiestGuy.ttf.36.118.rgba", (21, 33)))
-    , ('w', ((0, 30), (0, 23), 29),("LuckiestGuy.ttf.36.119.rgba", (30, 33)))
-    , ('x', ((-1, 20), (0, 23), 19),("LuckiestGuy.ttf.36.120.rgba", (21, 33)))
-    , ('y', ((-1, 21), (0, 22), 19),("LuckiestGuy.ttf.36.121.rgba", (22, 33)))
-    , ('z', ((0, 16), (0, 23), 16),("LuckiestGuy.ttf.36.122.rgba", (16, 33)))
-    , ('{', ((-1, 14), (-3, 25), 13),("LuckiestGuy.ttf.36.123.rgba", (15, 33)))
-    , ('|', ((1, 9), (-3, 25), 9),("LuckiestGuy.ttf.36.124.rgba", (9, 33)))
-    , ('}', ((-2, 13), (-3, 25), 13),("LuckiestGuy.ttf.36.125.rgba", (15, 33)))
-    , ('~', ((0, 19), (6, 18), 18),("LuckiestGuy.ttf.36.126.rgba", (19, 33)))
-    ]))
-  ]
-{-
-module Main where
-
-import Codec.Picture
-import Data.Vector.Binary
-import qualified Data.ByteString as B
-import Data.Binary.Put
-import Data.Binary
-
-main :: IO ()
-main = toRGBA "ship.bmp"
-
-toRGBA fn0 = do
-  ImageRGBA8 img <- either error id <$> readImage fn0
-  let fn = fn0 ++ ".rgba"
-  encodeFile fn $ imageData img
-  print (fn, (imageWidth img, imageHeight img))
--}
+metrics :: [((FilePath, Int32),[(Char, Int32, Int32, Int32, (FilePath, (Int32, Int32)))])]
+metrics =
+  [(("LuckiestGuy.ttf",36),[(' ',0,44,9,("LuckiestGuy.ttf.36.32.rgba",(0,0))),('!',1,9,13,("LuckiestGuy.ttf.36.33.rgba",(12,37))),('"',0,6,24,("LuckiestGuy.ttf.36.34.rgba",(24,17))),('#',0,14,29,("LuckiestGuy.ttf.36.35.rgba",(28,27))),('$',1,7,21,("LuckiestGuy.ttf.36.36.rgba",(19,41))),('%',0,13,35,("LuckiestGuy.ttf.36.37.rgba",(34,29))),('&',0,11,31,("LuckiestGuy.ttf.36.38.rgba",(31,33))),('\'',0,6,12,("LuckiestGuy.ttf.36.39.rgba",(12,15))),('(',0,7,20,("LuckiestGuy.ttf.36.40.rgba",(20,41))),(')',-2,7,18,("LuckiestGuy.ttf.36.41.rgba",(20,41))),('*',0,9,26,("LuckiestGuy.ttf.36.42.rgba",(25,25))),('+',1,18,22,("LuckiestGuy.ttf.36.43.rgba",(20,21))),(',',0,33,11,("LuckiestGuy.ttf.36.44.rgba",(11,16))),('-',1,23,18,("LuckiestGuy.ttf.36.45.rgba",(16,9))),('.',0,34,11,("LuckiestGuy.ttf.36.46.rgba",(11,11))),('/',0,8,24,("LuckiestGuy.ttf.36.47.rgba",(24,38))),('0',0,10,30,("LuckiestGuy.ttf.36.48.rgba",(30,35))),('1',-1,9,19,("LuckiestGuy.ttf.36.49.rgba",(19,35))),('2',0,8,24,("LuckiestGuy.ttf.36.50.rgba",(24,36))),('3',0,8,25,("LuckiestGuy.ttf.36.51.rgba",(25,37))),('4',0,9,26,("LuckiestGuy.ttf.36.52.rgba",(26,35))),('5',0,9,25,("LuckiestGuy.ttf.36.53.rgba",(25,36))),('6',0,9,28,("LuckiestGuy.ttf.36.54.rgba",(28,36))),('7',0,9,24,("LuckiestGuy.ttf.36.55.rgba",(24,35))),('8',0,9,27,("LuckiestGuy.ttf.36.56.rgba",(27,36))),('9',0,9,27,("LuckiestGuy.ttf.36.57.rgba",(26,35))),(':',1,19,12,("LuckiestGuy.ttf.36.58.rgba",(10,26))),(';',0,19,12,("LuckiestGuy.ttf.36.59.rgba",(11,30))),('<',1,13,22,("LuckiestGuy.ttf.36.60.rgba",(20,29))),('=',1,20,19,("LuckiestGuy.ttf.36.61.rgba",(16,19))),('>',1,13,22,("LuckiestGuy.ttf.36.62.rgba",(20,29))),('?',0,9,27,("LuckiestGuy.ttf.36.63.rgba",(26,37))),('@',1,13,32,("LuckiestGuy.ttf.36.64.rgba",(30,29))),('A',-1,10,31,("LuckiestGuy.ttf.36.65.rgba",(32,34))),('B',1,9,29,("LuckiestGuy.ttf.36.66.rgba",(28,36))),('C',0,9,25,("LuckiestGuy.ttf.36.67.rgba",(25,35))),('D',1,10,28,("LuckiestGuy.ttf.36.68.rgba",(27,34))),('E',1,10,24,("LuckiestGuy.ttf.36.69.rgba",(23,34))),('F',1,10,24,("LuckiestGuy.ttf.36.70.rgba",(23,34))),('G',0,9,30,("LuckiestGuy.ttf.36.71.rgba",(30,36))),('H',0,10,30,("LuckiestGuy.ttf.36.72.rgba",(30,35))),('I',1,11,14,("LuckiestGuy.ttf.36.73.rgba",(13,33))),('J',-1,10,24,("LuckiestGuy.ttf.36.74.rgba",(25,35))),('K',1,9,31,("LuckiestGuy.ttf.36.75.rgba",(30,37))),('L',1,10,22,("LuckiestGuy.ttf.36.76.rgba",(21,33))),('M',1,9,38,("LuckiestGuy.ttf.36.77.rgba",(37,36))),('N',0,9,34,("LuckiestGuy.ttf.36.78.rgba",(34,35))),('O',0,12,31,("LuckiestGuy.ttf.36.79.rgba",(31,32))),('P',1,9,29,("LuckiestGuy.ttf.36.80.rgba",(28,36))),('Q',0,10,33,("LuckiestGuy.ttf.36.81.rgba",(33,39))),('R',1,9,29,("LuckiestGuy.ttf.36.82.rgba",(28,35))),('S',0,9,26,("LuckiestGuy.ttf.36.83.rgba",(26,36))),('T',0,10,26,("LuckiestGuy.ttf.36.84.rgba",(26,34))),('U',0,11,30,("LuckiestGuy.ttf.36.85.rgba",(30,35))),('V',-1,10,30,("LuckiestGuy.ttf.36.86.rgba",(31,35))),('W',0,10,44,("LuckiestGuy.ttf.36.87.rgba",(44,35))),('X',-2,9,30,("LuckiestGuy.ttf.36.88.rgba",(32,35))),('Y',0,11,32,("LuckiestGuy.ttf.36.89.rgba",(32,34))),('Z',0,9,23,("LuckiestGuy.ttf.36.90.rgba",(23,35))),('[',1,7,18,("LuckiestGuy.ttf.36.91.rgba",(17,41))),('\\',1,8,24,("LuckiestGuy.ttf.36.92.rgba",(23,38))),(']',-1,7,18,("LuckiestGuy.ttf.36.93.rgba",(18,41))),('^',0,10,24,("LuckiestGuy.ttf.36.94.rgba",(24,19))),('_',-1,46,15,("LuckiestGuy.ttf.36.95.rgba",(16,9))),('`',0,-1,14,("LuckiestGuy.ttf.36.96.rgba",(14,13))),('a',-1,10,31,("LuckiestGuy.ttf.36.97.rgba",(32,34))),('b',1,9,29,("LuckiestGuy.ttf.36.98.rgba",(28,36))),('c',0,10,25,("LuckiestGuy.ttf.36.99.rgba",(25,35))),('d',1,11,28,("LuckiestGuy.ttf.36.100.rgba",(27,33))),('e',0,10,28,("LuckiestGuy.ttf.36.101.rgba",(28,35))),('f',1,10,24,("LuckiestGuy.ttf.36.102.rgba",(23,34))),('g',0,9,30,("LuckiestGuy.ttf.36.103.rgba",(30,36))),('h',0,10,30,("LuckiestGuy.ttf.36.104.rgba",(30,34))),('i',0,11,14,("LuckiestGuy.ttf.36.105.rgba",(14,33))),('j',-1,10,24,("LuckiestGuy.ttf.36.106.rgba",(25,35))),('k',1,10,30,("LuckiestGuy.ttf.36.107.rgba",(29,35))),('l',1,10,22,("LuckiestGuy.ttf.36.108.rgba",(21,34))),('m',0,10,43,("LuckiestGuy.ttf.36.109.rgba",(43,34))),('n',0,9,31,("LuckiestGuy.ttf.36.110.rgba",(31,35))),('o',0,11,31,("LuckiestGuy.ttf.36.111.rgba",(31,31))),('p',1,10,29,("LuckiestGuy.ttf.36.112.rgba",(28,35))),('q',0,10,33,("LuckiestGuy.ttf.36.113.rgba",(33,39))),('r',1,9,29,("LuckiestGuy.ttf.36.114.rgba",(28,35))),('s',0,10,26,("LuckiestGuy.ttf.36.115.rgba",(26,35))),('t',0,10,27,("LuckiestGuy.ttf.36.116.rgba",(27,34))),('u',0,11,30,("LuckiestGuy.ttf.36.117.rgba",(30,34))),('v',-1,10,30,("LuckiestGuy.ttf.36.118.rgba",(31,34))),('w',0,10,44,("LuckiestGuy.ttf.36.119.rgba",(44,34))),('x',-1,10,30,("LuckiestGuy.ttf.36.120.rgba",(31,34))),('y',-1,11,31,("LuckiestGuy.ttf.36.121.rgba",(32,33))),('z',0,10,24,("LuckiestGuy.ttf.36.122.rgba",(24,34))),('{',-1,6,21,("LuckiestGuy.ttf.36.123.rgba",(22,43))),('|',1,7,14,("LuckiestGuy.ttf.36.124.rgba",(12,41))),('}',-2,6,20,("LuckiestGuy.ttf.36.125.rgba",(22,43))),('~',0,17,28,("LuckiestGuy.ttf.36.126.rgba",(28,18)))])]
