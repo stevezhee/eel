@@ -7,6 +7,9 @@ void puti(int x) { printf("%d\n", x); }
 void putb(int x) { if(x == 0) {printf("false\n"); } else {printf("true\n"); } }
 void putu(unsigned int x) { printf("%u\n", x); }
 void putf(float x) { printf("%f\n", x); }
+void putp(void *x) { printf("%p\n", x); }
+void putcstr(char *s) { printf("%s\n", s); }
+void putcchar(char c) { printf("%c\n", c); }
 
 static SDL_Window *win = NULL;
 static SDL_Renderer *renderer = NULL;
@@ -114,7 +117,7 @@ void font_gen(char *fn, int fntsz)
 
   cbuf[1] = '\0';
 
-  for(int i = 32; i < 127; ++i)
+  for(char i = 32; i < 127; ++i)
     {
       sprintf(fnbuf, "%s.%d.%d.rgba",fn,fntsz,i);
 
