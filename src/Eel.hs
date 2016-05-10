@@ -654,9 +654,9 @@ mainM f = do
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
   -- cmd "cat t.ll"
   cmd "llc -fatal-assembler-warnings t.ll"
-  -- cmd "clang -I/usr/include/SDL2 -o t.exe t.s eel.c -lSDL2"
-  cmd "clang -I/usr/include/SDL2 -o t.exe t.s eel.c -lcygwin -lSDL2main -lSDL2"
-  -- cmd "./t.exe"
+  cmd "clang -I/usr/include/SDL2 -o t.exe t.s eel.c -lSDL2"
+  -- cmd "clang -I/usr/include/SDL2 -o t.exe t.s eel.c -lcygwin -lSDL2main -lSDL2"
+  cmd "./t.exe"
   where
     cmd s = do
       putStrLn s

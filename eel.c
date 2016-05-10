@@ -9,6 +9,8 @@ void putl(unsigned long int x) { printf("%lu\n", x); }
 void putb(int x) { if(x == 0) {printf("false\n"); } else {printf("true\n"); } }
 void putu(unsigned int x) { printf("%u\n", x); }
 void putf(float x) { printf("%f\n", x); }
+void sputf(char *buf, float x) { sprintf(buf,"%f", x); }
+void sputl(char *buf, unsigned long int x) { sprintf(buf,"%lu", x); }
 void putp(void *x) { printf("%p\n", x); }
 void putcstr(char *s) { printf("%s\n", s); }
 void putcchar(char c) { printf("%c\n", c); }

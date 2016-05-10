@@ -4,11 +4,16 @@
 
 module Main where
 
-import Prelude hiding (div)
+import Prelude hiding (div, and)
 import Eel hiding (mainM)
 import qualified Eel as E
 import Control.Monad hiding (when)
   
+sputf :: Ptr' Char -> Float' -> M ()
+sputf = curry $ ffi "sputf"
+sputl :: Ptr' Char -> Word64' -> M ()
+sputl = curry $ ffi "sputl"
+
 putu :: Word' -> M ()
 putu = ffi "putu"
 puti :: Int' -> M ()
@@ -216,7 +221,7 @@ sdl_getperformancefrequency = ffi "SDL_GetPerformanceFrequency" ()
 
 main :: IO ()
 main = mainM $ do
-  puti =<< ((1 + 4) + (3 + 2))
+  outbuf <- allocn 1024
   init_sdl ((30,550), (1280, 256))
   font <- loadFont "LuckiestGuy.ttf" 36
   set_color (0,0x30,0,0xff)
@@ -241,14 +246,13 @@ main = mainM $ do
     x <- load px
     r <- load pr
     blit (tex, sz, (x,100,r))
-    blitString font u 10 140
-    present_sdl
     sdl_getperformancecounter >>= flip store t1
-    delta_t <- cast =<< ((load t1) - (load t0))
-    putf =<< div delta_t perf_freq
-    -- sleep
-    sdl_delay 16
+    sputf outbuf =<< div 1 =<< flip div perf_freq =<< cast =<< ((load t1) - (load t0))
     sdl_getperformancecounter >>= flip store t0
+    blitString font outbuf 10 140
+    present_sdl
+    -- sleep
+    sdl_delay 17
     -- input
     switch poll_sdl
       (\_ -> return true)
