@@ -3,17 +3,20 @@
 #include <string.h>
 #include <SDL.h>
 
+#define FLOAT_FMT "%.1f"
+
 void puti(int x) { printf("%d\n", x); }
-void putd(double x) { printf("%f\n", x); }
+void putd(double x) { printf(FLOAT_FMT"\n", x); }
 void putl(unsigned long int x) { printf("%lu\n", x); }
 void putb(int x) { if(x == 0) {printf("false\n"); } else {printf("true\n"); } }
 void putu(unsigned int x) { printf("%u\n", x); }
-void putf(float x) { printf("%f\n", x); }
-void sputf(char *buf, float x) { sprintf(buf,"%f", x); }
+void putf(float x) { printf(FLOAT_FMT"\n", x); }
+void putp(void *x) { printf("@%p\n", x); }
+void putcstr(char *s) { printf("\"%s\"\n", s); }
+void putcchar(char c) { printf("'%c'\n", c); }
+
+void sputf(char *buf, float x) { sprintf(buf,FLOAT_FMT, x); }
 void sputl(char *buf, unsigned long int x) { sprintf(buf,"%lu", x); }
-void putp(void *x) { printf("%p\n", x); }
-void putcstr(char *s) { printf("%s\n", s); }
-void putcchar(char c) { printf("%c\n", c); }
 
 static SDL_Window *win = NULL;
 static SDL_Renderer *renderer = NULL;

@@ -28,6 +28,7 @@ import Data.Int
 import Data.Word
 import Control.Monad.State
 import System.Process
+import System.Info
 
 -- | Quick and dirty representation of LLVM types.
 -- http://llvm.org/docs/LangRef.html#type-system
@@ -654,8 +655,9 @@ mainM f = do
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
   -- cmd "cat t.ll"
   cmd "llc -fatal-assembler-warnings t.ll"
-  cmd "clang -I/usr/include/SDL2 -o t.exe t.s eel.c -lSDL2"
-  -- cmd "clang -I/usr/include/SDL2 -o t.exe t.s eel.c -lcygwin -lSDL2main -lSDL2"
+  let cflags = if os == "linux" then "" else "-lcygwin -lSDL2main"
+  cmd $ "clang -I/usr/include/SDL2 -o t.exe t.s eel.c " ++ cflags ++ " -lSDL2"
+  -- ^ order of cflags matters
   cmd "./t.exe"
   where
     cmd s = do
