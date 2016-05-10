@@ -99,9 +99,6 @@ data Ptr a = Ptr{ unPtr :: Int } deriving Show
 unused :: String -> a
 unused s = error $ "unused:" ++ s
 
--- | LLVM extractvalue instruction.
--- | LLVM insertvalue instruction.
-
 -- | LLVM is strongly typed so we'll need a way to annotate each value
 -- with a type.  The input parameter is a placeholder which is only
 -- there so that the instance can resolve appropriately.  As such, it
@@ -657,8 +654,8 @@ mainM f = do
   cmd "llc -fatal-assembler-warnings t.ll"
   let cflags = if os == "linux" then "" else "-lcygwin -lSDL2main"
   cmd $ "clang -I/usr/include/SDL2 -o t.exe t.s eel.c " ++ cflags ++ " -lSDL2"
-  -- ^ order of cflags matters
-  cmd "./t.exe"
+  -- order of cflags matters
+  when (os == "linux") $ cmd "./t.exe"
   where
     cmd s = do
       putStrLn s

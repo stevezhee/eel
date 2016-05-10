@@ -3,7 +3,7 @@
 #include <string.h>
 #include <SDL.h>
 
-#define FLOAT_FMT "%.1f"
+#define FLOAT_FMT "%9.1f"
 
 void puti(int x) { printf("%d\n", x); }
 void putd(double x) { printf(FLOAT_FMT"\n", x); }
@@ -93,7 +93,7 @@ void present_sdl()
 SDL_RenderPresent(renderer);
 }
 
-void blit(SDL_Texture *tex, int w, int h, int x, int y, double angle)
+void blit(SDL_Texture *tex, int w, int h, int x, int y, float angle)
 {
   SDL_Rect rect;
   rect.x = x;
