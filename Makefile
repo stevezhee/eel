@@ -1,18 +1,20 @@
 .PHONY: test all lint doc clean t.exe
 
+ifeq ($(UNAME), Linux)
 CFLAGS = 
+else
+CFLAGS = -lcygwin -lSDL2main # order of cflags matters
+endif
 
-all : t.exe
-  # cmd "cat t.ll"
+all : test t.exe
+  # cat t.ll
 	./t.exe
 
 %.s : %.ll
 	llc -fatal-assembler-warnings $<
 
 t.exe : t.s eel.c
-  # let cflags = if os == "linux" then "" else "-lcygwin -lSDL2main"
-	clang -I/usr/include/SDL2 -o t.exe t.s eel.c ${CFLAGS} -lSDL2
-  # order of cflags matters
+	clang -I/usr/include/SDL2 -o $@ $^ ${CFLAGS} -lSDL2
 
 #all : test doc # lint
 	# stack install
@@ -26,7 +28,6 @@ doc :
 	stack haddock
 
 test :
-	rm -f t.exe
 	stack test
 
 clean :

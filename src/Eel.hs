@@ -27,7 +27,7 @@ where
 import Data.Int
 import Data.Word
 import Control.Monad.State
-import System.Process
+
 
 
 -- | Quick and dirty representation of LLVM types.
@@ -132,7 +132,9 @@ instance Ty Double where ty _ = "double"
 instance Ty a => Ty (Ptr a) where
   ty (_ :: I (Ptr a)) = ty (unused "Ty Ptr" :: I a) ++ "*"
 
--- | A class is used to model parameters/arguments.
+-- | A class is used to model parameters/arguments.  We only need
+-- instances for zero, one, and two arguments.  Everything else can be
+-- constructed from those.
 class Args a where
   instantiate :: M a
   unArgs :: a -> [V ()]
@@ -153,16 +155,6 @@ instance Ty a => Args (V a) where
 instance (Args a, Args b) => Args (a,b) where
   instantiate = (,) <$> instantiate <*> instantiate
   unArgs (x,y) = unArgs x ++ unArgs y
-
--- | Three arguments.
-instance (Args a, Args b, Args c) => Args (a,b,c) where
-  instantiate = (,,) <$> instantiate <*> instantiate <*> instantiate
-  unArgs (x,y,z) = unArgs x ++ unArgs y ++ unArgs z
-
--- | Four arguments.
-instance (Args a, Args b, Args c, Args d) => Args (a,b,c,d) where
-  instantiate = (,,,) <$> instantiate <*> instantiate <*> instantiate <*> instantiate
-  unArgs (w,x,y,z) = unArgs w ++ unArgs x ++ unArgs y ++ unArgs z
 
 -- | A class will allow us to convert Haskell values into LLVM
 -- literals.
@@ -650,11 +642,6 @@ mainM :: ((V Int32, V (Ptr (Ptr Char))) -> I Int32) -> IO ()
 mainM f = do
   let st = execState (define "eel_main" f ty tyvalof) $ St initContext [] [] []
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
-  cmd "make"
-  where
-    cmd s = do
-      putStrLn s
-      callCommand s
       
 -- | Quick and dirty representation of LLVM labels.
 -- http://llvm.org/docs/LangRef.html#label-type
