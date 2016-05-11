@@ -28,7 +28,7 @@ import Data.Int
 import Data.Word
 import Control.Monad.State
 import System.Process
-import System.Info
+
 
 -- | Quick and dirty representation of LLVM types.
 -- http://llvm.org/docs/LangRef.html#type-system
@@ -650,12 +650,7 @@ mainM :: ((V Int32, V (Ptr (Ptr Char))) -> I Int32) -> IO ()
 mainM f = do
   let st = execState (define "eel_main" f ty tyvalof) $ St initContext [] [] []
   writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
-  -- cmd "cat t.ll"
-  cmd "llc -fatal-assembler-warnings t.ll"
-  let cflags = if os == "linux" then "" else "-lcygwin -lSDL2main"
-  cmd $ "clang -I/usr/include/SDL2 -o t.exe t.s eel.c " ++ cflags ++ " -lSDL2"
-  -- order of cflags matters
-  when (os == "linux") $ cmd "./t.exe"
+  cmd "make"
   where
     cmd s = do
       putStrLn s
