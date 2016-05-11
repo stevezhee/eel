@@ -1,5 +1,7 @@
 .PHONY: test all lint doc clean t.exe
 
+UNAME = $(shell uname)
+
 ifeq ($(UNAME), Linux)
 CFLAGS = 
 else
