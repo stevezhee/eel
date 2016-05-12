@@ -1,7 +1,7 @@
+{-# OPTIONS_GHC -w #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# OPTIONS_GHC -w #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -11,6 +11,7 @@ import Prelude hiding (div, and)
 import Eel hiding (mainM, cast, lit, Ptr, ffi, binop)
 import qualified Eel as E
 import Control.Monad hiding (when)
+-- import Control.Applicative
 
 type Int' = I Int32
 type Word' = I Word32
@@ -28,10 +29,8 @@ type Tex = (Ptr Texture, (Int', Int'))
   
 sputf :: Ptr Char -> Float' -> M ()
 sputf p = ffi "sputf" (return p :: M (Ptr Char))
-
 sputl :: Ptr Char -> Word64' -> M ()
 sputl p = ffi "sputl" (return p :: M (Ptr Char))
-
 putu :: Word' -> M ()
 putu = ffi "putu"
 puti :: Int' -> M ()
@@ -54,21 +53,24 @@ poll_sdl :: Int'
 poll_sdl = ffi "poll_sdl" ()
 cleanup_sdl :: Int' -> M ()
 cleanup_sdl = ffi "cleanup_sdl"
-
 load_rgba :: (String', (V Int32, V Int32)) -> M (Ptr Texture)
 load_rgba = E.ffi "load_rgba"
-                                    
 present_sdl :: M ()
 present_sdl = ffi "present_sdl" ()
-
 clear_sdl :: M ()
 clear_sdl = ffi "clear_sdl" ()
-
 sdl_getperformancecounter :: Word64'
 sdl_getperformancecounter = ffi "SDL_GetPerformanceCounter" ()
-
 sdl_getperformancefrequency :: Word64'
 sdl_getperformancefrequency = ffi "SDL_GetPerformanceFrequency" ()
+blit :: Tex -> Int' -> Int' -> Float' -> M ()
+blit (t,(w,h)) = ffi "blit" (return t :: M (Ptr Texture)) w h
+sdl_delay :: Int' -> M ()
+sdl_delay = ffi "SDL_Delay"
+init_sdl :: Int' -> Int' -> Int' -> Int' -> M ()
+init_sdl = ffi "init_sdl"
+set_color :: Int' -> Int' -> Int' -> Int' -> M ()
+set_color = ffi "set_color"
 
 true :: Bool'
 true = lit True
@@ -119,19 +121,13 @@ sdlk_right = 1073741903
 data Texture
 instance Ty Texture where ty _ = ty (unused "Texture" :: Int')
 
-blit :: Tex -> Int' -> Int' -> Float' -> M ()
-blit (t,(w,h)) = ffi "blit" (return t :: M (Ptr Texture)) w h
-
-sdl_delay :: Int' -> M ()
-sdl_delay = ffi "SDL_Delay"
-
 cstring :: String -> M (Ptr Char)
 cstring s = newn $ fmap E.lit $ s ++ ['\0']
 
 new :: Ty a => I a -> M (Ptr a)
 new x = do
   p <- alloca (E.lit 1 :: V Int32)
-  p <. x
+  p <-. x
   return p
 
 newn :: Ty a => [V a] -> M (Ptr a)
@@ -149,8 +145,8 @@ modify p f = do
   store a p
   return a
 
-load_tex :: FilePath -> M Tex
-load_tex fn = do
+loadTex :: FilePath -> M Tex
+loadTex fn = do
   let sz@(w,h) = maybe (error $ "unknown texture:" ++ show fn) id $ lookup fn textures
   a <- w
   b <- h
@@ -167,8 +163,8 @@ loadFont nm pt = do
   gs@[w_arr, h_arr, left_arr, top_arr, advance_arr] <-
     sequence $ replicate 5 $ allocn n
   let loadGlyph (i, (_, left, top, adv, (fn, _))) = do
-        let upd arr a = ix arr (fromIntegral i) >>= \i -> i <. a
-        (t, (w,h)) <- load_tex fn
+        let upd arr a = ix arr (fromIntegral i) >>= \i -> i <-. a
+        (t, (w,h)) <- loadTex fn
         upd tex_arr $ return t
         upd w_arr w
         upd h_arr h
@@ -215,9 +211,6 @@ instance Fractional Float' where
   fromRational = lit . fromRational
   (/) = binop div
 
-init_sdl :: Int' -> Int' -> Int' -> Int' -> M ()
-init_sdl = ffi "init_sdl"
-
 class Fun f g | f -> g where fun :: g -> f
  
 instance (Ret r) => Fun (() -> M r) (() -> M r) where
@@ -258,48 +251,64 @@ ffi = fun . E.ffi
 expr :: (Lit a, Fun a g) => g -> I a
 expr = lit . fun
 
-set_color :: Int' -> Int' -> Int' -> Int' -> M ()
-set_color = ffi "set_color"
-
 cast :: (Cast a, Cast b) => I a -> I b
 cast = fun E.cast
 
-(<.) :: Ty a => Ptr a -> I a -> M ()
-(<.) p = fun (flip store p)
+(<-.) :: Ty a => Ptr a -> I a -> M ()
+(<-.) p = fun (flip store p)
 
 (+=) x = modify x . (+)
-(-=) x = modify x . (-)
+(-=) x = modify x . flip (-)
 
 let' :: Ty a => I a -> M (I a)
 let' m = m >>= \a -> return (return a)
 
+(<.) :: Cmp a => I a -> I a -> Bool'
+(<.) = binop lt
+(>.) :: Cmp a => I a -> I a -> Bool'
+(>.) = binop gt
+(>=.) :: Cmp a => I a -> I a -> Bool'
+(>=.) = binop ge
+(<=.) :: Cmp a => I a -> I a -> Bool'
+(<=.) = binop le
+
 main :: IO ()
 main = mainM $ do
   outbuf <- allocn 1024
-  vx <- new 0
+  vx <- new 1
   vr <- new 0
   t0 <- new 0
   t1 <- new 0
-  x <- new 100
+  x <- new 1200
   r <- new 90
-  init_sdl 30 550 1280 256
+  let screen_w = 1280
+  init_sdl 30 550 screen_w 256
   font <- loadFont "LuckiestGuy.ttf" 36
-  tex <- load_tex "ship.png.rgba"
+  tex@(_,(ship_w, ship_h)) <- loadTex "ship.png.rgba"
   set_color 0 0x30 0 0xff
   perf_freq <- let' $ cast sdl_getperformancefrequency
   -- game loop
+  ship_x_max <- let' (screen_w - ship_w)
   while $ do
     -- update state
     x += load vx
+    oneof (return ())
+      [ (load x <. 0, do
+            x += 2*(load x)
+            vx <-. negate (load vx))
+      , (load x >. ship_x_max, do
+            x -= 2*(load x - ship_x_max)
+            vx <-. negate (load vx))
+      ]
     r += load vr
     -- render screen
     clear_sdl
     -- draw ship
     blit tex (load x) 100 (load r)
     -- compute frames per second
-    t0 <. sdl_getperformancecounter
+    t0 <-. sdl_getperformancecounter
     sputf outbuf (perf_freq / cast (load t0 - load t1))
-    t1 <. sdl_getperformancecounter
+    t1 <-. sdl_getperformancecounter
     blitString font outbuf 10 140
     present_sdl
     -- sleep

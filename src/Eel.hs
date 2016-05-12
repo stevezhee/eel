@@ -1,6 +1,6 @@
+{-# OPTIONS_GHC -Wall #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeSynonymInstances #-}
-{-# OPTIONS_GHC -Wall #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-|
 Module      : Eel
@@ -27,7 +27,7 @@ where
 import Data.Int
 import Data.Word
 import Control.Monad.State
-
+-- import Control.Applicative
 
 
 -- | Quick and dirty representation of LLVM types.

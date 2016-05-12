@@ -8,9 +8,12 @@ else
 CFLAGS = -lcygwin -lSDL2main # order of cflags matters
 endif
 
-all : test t.exe
+all : t.exe # test
   # cat t.ll
 	./t.exe
+
+t.ll : src/Eel.hs test/Spec.hs
+	stack runghc test/Spec.hs
 
 %.s : %.ll
 	llc -fatal-assembler-warnings $<
