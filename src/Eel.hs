@@ -631,7 +631,7 @@ getelementptr p i = assign ["getelementptr", tyvalof p `comma` tyvalof i]
 -- entry point.
 -- | As an example:
 --
--- >>> mainM $ \(argc, _argv) -> sub argc (lit 1)
+-- >>> mainM "t.ll" $ \(argc, _argv) -> sub argc (lit 1)
 -- 
 -- define i32 @main (i32 %v0, i8** %v1)
 -- {

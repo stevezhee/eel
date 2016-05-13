@@ -139,11 +139,10 @@ newn xs = do
 ix :: Ty a => Array a -> Int' -> M (Ptr a)
 ix arr = fun (getelementptr arr)
 
-modify :: Ty a => Ptr a -> (I a -> I a) -> I a
+modify :: Ty a => Ptr a -> (I a -> I a) -> M ()
 modify p f = do
   a <- f $ load p
   store a p
-  return a
 
 loadTex :: FilePath -> M Tex
 loadTex fn = do
@@ -174,23 +173,24 @@ loadFont nm pt = do
   mapM_ loadGlyph $ zip [0 .. ] chs
   return (tex_arr, gs)
 
-inc :: (Arith a, Lit a, Num a) => Ptr a -> I a
+inc :: (Arith a, Lit a, Num a) => Ptr a -> M ()
 inc p = modify p $ (+) 1
-dec :: (Arith a, Lit a, Num a) => Ptr a -> I a
+dec :: (Arith a, Lit a, Num a) => Ptr a -> M ()
 dec p = modify p $ flip (-) 1
 
 blitString :: Font -> String' -> Int' -> Int' -> M ()
 blitString fnt s x0 y = do
-  pi <- new 0
-  px <- new x0
+  i <- new 0
+  x <- new x0
   while $ do
-    c <- let' (loadix s (inc pi))
+    c <- let' (loadix s (load i))
+    inc i
     r <- let' (c /=. (lit '\0'))
     when r $ do
-      void $ modify px $ \x -> do
+      modify x $ \v -> do
         (tex, [ left, top, advance]) <- lookupChar fnt c
-        blit tex (left + x) (top + y) 0
-        advance + x
+        blit tex (left + v) (top + y) 0
+        advance + v
     r
 
 instance (Arith a, Lit a, Num a) => Num (I a) where
@@ -294,11 +294,11 @@ main = mainM $ do
     x += load vx
     oneof (return ())
       [ (load x <. 0, do
-            x += 2*(load x)
-            vx <-. negate (load vx))
+            modify x $ \x -> x - 2 * x
+            modify vx negate)
       , (load x >. ship_x_max, do
-            x -= 2*(load x - ship_x_max)
-            vx <-. negate (load vx))
+            modify x $ \x -> x - 2 * (x - ship_x_max)
+            modify vx negate)
       ]
     r += load vr
     -- render screen
@@ -324,6 +324,7 @@ main = mainM $ do
       ]
   cleanup_sdl 0
 
+loadix :: Ty a => Array a -> Int' -> I a
 loadix x i = ix x i >>= load
 
 lookupChar :: Font -> Char' -> M Glyph
