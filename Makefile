@@ -2,10 +2,16 @@
 
 UNAME = $(shell uname)
 
-ifeq ($(UNAME), Linux)
+ifneq ($(UNAME), Windows_NT)
 CFLAGS = 
 else
 CFLAGS = -lcygwin -lSDL2main # order of cflags matters
+endif
+
+ifeq ($(UNAME), Darwin)
+SDL2_PATH = -I/usr/local/include/SDL2
+else
+SDL2_PATH = -I/usr/include/SDL2
 endif
 
 all : t.exe # test
@@ -16,10 +22,10 @@ t.ll : src/Eel.hs test/Spec.hs
 	stack runghc test/Spec.hs
 
 %.s : %.ll
-	llc -fatal-assembler-warnings $<
+	llc $<
 
 t.exe : t.s eel.c
-	clang -I/usr/include/SDL2 -o $@ $^ ${CFLAGS} -lSDL2
+	clang -I/usr/include/SDL2 -I/usr/local/include/SDL2 -o $@ $^ ${CFLAGS} -lSDL2
 
 #all : test doc # lint
 	# stack install
