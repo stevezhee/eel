@@ -638,10 +638,10 @@ getelementptr p i = assign ["getelementptr", tyvalof p `comma` tyvalof i]
 -- %v2 = sub i32 %v0, 1
 -- ret i32 %v2
 -- }
-mainM :: ((V Int32, V (Ptr (Ptr Char))) -> I Int32) -> IO ()
-mainM f = do
+mainM :: String -> ((V Int32, V (Ptr (Ptr Char))) -> I Int32) -> IO ()
+mainM filename f = do
   let st = execState (define "eel_main" f ty tyvalof) $ St initContext [] [] []
-  writeFile "t.ll" $ unlines $ concat $ reverse $ snd <$> namespace st
+  writeFile filename $ unlines $ concat $ reverse $ snd <$> namespace st
       
 -- | Quick and dirty representation of LLVM labels.
 -- http://llvm.org/docs/LangRef.html#label-type
