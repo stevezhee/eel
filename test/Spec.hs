@@ -81,7 +81,7 @@ allocn :: Ty a => Int' -> M (Ptr a)
 allocn = fun alloca
 
 mainM :: M () -> IO ()
-mainM m = E.mainM $ \(_argc, _argv) -> m >> lit 0
+mainM m = E.mainM "t.ll" $ \(_argc, _argv) -> m >> lit 0
   
 while :: Bool' -> M ()
 while x = do
