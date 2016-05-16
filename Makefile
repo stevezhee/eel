@@ -2,10 +2,16 @@
 
 UNAME = $(shell uname)
 
-ifneq ($(UNAME), Windows_NT)
+WINFLAGS = -lcygwin -lSDL2main # order of cflags matters
+
 CFLAGS = 
-else
-CFLAGS = -lcygwin -lSDL2main # order of cflags matters
+
+ifeq ($(UNAME), Windows_NT)
+CFLAGS = ${WINFLAGS}
+endif
+
+ifeq ($(UNAME), CYGWIN_NT-6.1-WOW64)
+CFLAGS = ${WINFLAGS}
 endif
 
 ifeq ($(UNAME), Darwin)
