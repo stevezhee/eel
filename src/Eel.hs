@@ -196,7 +196,8 @@ doubleToIEEE754Hex x = "0x" ++ concat (fmap f $ S.unpack $ runPut $ putFloat64be
   where
     f c = case showHex (fromEnum c) "" of
       [a] -> ['0', a]
-      s -> s
+      s@[_,_] -> s
+      _ -> unused "doubleToIEEE754Hex"
       
 -- | This record is used to eliminate boilerplate in the Arith
 -- instance definitions.
