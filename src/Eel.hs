@@ -27,8 +27,10 @@ where
 import Data.Int
 import Data.Word
 import Control.Monad.State
--- import Control.Applicative
-
+import Data.Binary.Put
+import Data.Binary.IEEE754
+import qualified Data.ByteString.Lazy.Char8 as S
+import Numeric
 
 -- | Quick and dirty representation of LLVM types.
 -- http://llvm.org/docs/LangRef.html#type-system
@@ -185,10 +187,17 @@ instance Lit Word32 where lit = mkV . show
 -- | 64 bit unsigned integers.
 instance Lit Word64 where lit = mkV . show
 -- | 32 bit ordered floats.  Currently broken.
-instance Lit Float where lit = mkV . show -- BAL: implement IEEE 754 for LLVM
+instance Lit Float where lit = mkV . doubleToIEEE754Hex . fromRational . toRational
 -- | 64 bit ordered doubles.  Currently broken.
-instance Lit Double where lit = mkV . show -- BAL: implement IEEE 754 for LLVM
+instance Lit Double where lit = mkV . doubleToIEEE754Hex
 
+doubleToIEEE754Hex :: Double -> String
+doubleToIEEE754Hex x = "0x" ++ concat (fmap f $ S.unpack $ runPut $ putFloat64be x)
+  where
+    f c = case showHex (fromEnum c) "" of
+      [a] -> ['0', a]
+      s -> s
+      
 -- | This record is used to eliminate boilerplate in the Arith
 -- instance definitions.
 data ArithRec a = ArithRec

@@ -20,7 +20,7 @@ else
 SDL2_PATH = -I/usr/include/SDL2
 endif
 
-all : t.exe # test
+all : test t.exe
   # cat t.ll
 	./t.exe
 
