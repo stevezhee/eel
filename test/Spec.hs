@@ -7,105 +7,36 @@
 
 module Main where
 
-import Prelude hiding (div, and)
-import Eel hiding (mainM, cast, lit, Ptr, ffi, binop)
-import qualified Eel as E
-import Control.Monad hiding (when)
--- import Control.Applicative
+import CEel
 
-type Int' = I Int32
-type Word' = I Word32
-type Double' = I Double
-type Word64' = I Word64
-type Bool' = I Bool
-type Char' = I Char
-type Float' = I Float
-type Ptr a = V (E.Ptr a)
-type String' = Ptr Char
-type Array a = Ptr a
-type Font = (Array (E.Ptr Texture), [Array Int32])
+data Texture
+instance Ty Texture where ty _ = ty (unused "Texture" :: Int')
+type Font = (Array (Ptr Texture), [Array Int32])
 type Glyph = (Tex, [Int'])
-type Tex = (Ptr Texture, (Int', Int'))
-  
-sputf :: Ptr Char -> Float' -> M ()
-sputf p = ffi "sputf" (return p :: M (Ptr Char))
-sputl :: Ptr Char -> Word64' -> M ()
-sputl p = ffi "sputl" (return p :: M (Ptr Char))
-putu :: Word' -> M ()
-putu = ffi "putu"
-puti :: Int' -> M ()
-puti = ffi "puti"
-putf :: Float' -> M ()
-putf = ffi "putf"
-putd :: Double' -> M ()
-putd = ffi "putd"
-putl :: Word64' -> M ()
-putl = ffi "putl"
-putb :: Bool' -> M ()
-putb = ffi "putb"
-putc :: Char' -> M ()
-putc = ffi "putcchar"
-puts :: String' -> M ()
-puts = E.ffi "putcstr"
-putp :: Ty a => Ptr a -> M ()
-putp = E.ffi "putp"
+type Tex = (Ptr' Texture, (Int', Int'))
+
 poll_sdl :: Int'
-poll_sdl = ffi "poll_sdl" ()
+poll_sdl = declare "poll_sdl"
 cleanup_sdl :: Int' -> M ()
-cleanup_sdl = ffi "cleanup_sdl"
-load_rgba :: (String', (V Int32, V Int32)) -> M (Ptr Texture)
-load_rgba = E.ffi "load_rgba"
+cleanup_sdl = declare "cleanup_sdl"
+load_rgba :: (String', (V Int32, V Int32)) -> M (Ptr' Texture)
+load_rgba (fn, (w,h)) = declare "load_rgba" fn w h
 present_sdl :: M ()
-present_sdl = ffi "present_sdl" ()
+present_sdl = declare "present_sdl"
 clear_sdl :: M ()
-clear_sdl = ffi "clear_sdl" ()
+clear_sdl = declare "clear_sdl"
 sdl_getperformancecounter :: Word64'
-sdl_getperformancecounter = ffi "SDL_GetPerformanceCounter" ()
+sdl_getperformancecounter = declare "SDL_GetPerformanceCounter"
 sdl_getperformancefrequency :: Word64'
-sdl_getperformancefrequency = ffi "SDL_GetPerformanceFrequency" ()
+sdl_getperformancefrequency = declare "SDL_GetPerformanceFrequency"
 blit :: Tex -> Int' -> Int' -> Float' -> M ()
-blit (t,(w,h)) = ffi "blit" (return t :: M (Ptr Texture)) w h
+blit (t,(w,h)) = declare "blit" t w h
 sdl_delay :: Int' -> M ()
-sdl_delay = ffi "SDL_Delay"
+sdl_delay = declare "SDL_Delay"
 init_sdl :: Int' -> Int' -> Int' -> Int' -> M ()
-init_sdl = ffi "init_sdl"
+init_sdl = declare "init_sdl"
 set_color :: Int' -> Int' -> Int' -> Int' -> M ()
-set_color = ffi "set_color"
-
-true :: Bool'
-true = lit True
-false :: Bool'
-false = lit False
-
-allocn :: Ty a => Int' -> M (Ptr a)
-allocn = fun alloca
-
-mainM :: M () -> IO ()
-mainM m = E.mainM "t.ll" $ \(_argc, _argv) -> m >> lit 0
-  
-while :: Bool' -> M ()
-while x = do
-  start_lbl <- newLabel
-  done_lbl <- newLabel
-  br' start_lbl
-  block start_lbl
-  a <- x
-  br a start_lbl done_lbl
-  block done_lbl
-
-oneof :: Ret r => M r -> [(Bool', M r)] -> M r
-oneof = foldr (\(r,a) b -> if' r a b)
-
-lit :: Lit a => a -> I a
-lit = return . E.lit
-
-when :: Bool' -> M () -> M ()
-when x y = if' x y (return ())
-
-switch :: (Cmp a, Ret r) => I a -> (I a -> M r) -> [(I a, M r)] -> M r
-switch x f zs = do
-  a <- let' x
-  oneof (f a) [ (a ==. e, r) | (e, r) <- zs ]
+set_color = declare "set_color"
 
 sdl_quit :: Int'
 sdl_quit = 256
@@ -118,162 +49,10 @@ sdlk_left = 1073741904
 sdlk_right :: Int'
 sdlk_right = 1073741903
 
-data Texture
-instance Ty Texture where ty _ = ty (unused "Texture" :: Int')
-
-cstring :: String -> M (Ptr Char)
-cstring s = newn $ fmap E.lit $ s ++ ['\0']
-
-new :: Ty a => I a -> M (Ptr a)
-new x = do
-  p <- alloca (E.lit 1 :: V Int32)
-  p <-. x
-  return p
-
-newn :: Ty a => [V a] -> M (Ptr a)
-newn xs = do
-  p <- allocn $ fromIntegral $ length xs
-  sequence_ [ store x =<< ix p (lit i) | (i,x) <- zip [0 ..] xs ]
-  return p
-
-ix :: Ty a => Array a -> Int' -> M (Ptr a)
-ix arr = fun (getelementptr arr)
-
-modify :: Ty a => Ptr a -> (I a -> I a) -> M ()
-modify p f = do
-  a <- f $ load p
-  store a p
-
-loadTex :: FilePath -> M Tex
-loadTex fn = do
-  let sz@(w,h) = maybe (error $ "unknown texture:" ++ show fn) id $ lookup fn textures
-  a <- w
-  b <- h
-  tex <- cstring fn >>= \s -> load_rgba (s, (a,b))
-  return (tex, sz)
-
-loadFont :: String -> Int32 -> M Font
-loadFont nm pt = do
-  let fid = (nm,pt)
-  let chs =
-        maybe (error $ "unknown font:" ++ show fid) id $ lookup fid metrics
-  let n = fromIntegral $ length chs
-  tex_arr <- allocn n
-  gs@[w_arr, h_arr, left_arr, top_arr, advance_arr] <-
-    sequence $ replicate 5 $ allocn n
-  let loadGlyph (i, (_, left, top, adv, (fn, _))) = do
-        let upd arr a = ix arr (fromIntegral i) >>= \i -> i <-. a
-        (t, (w,h)) <- loadTex fn
-        upd tex_arr $ return t
-        upd w_arr w
-        upd h_arr h
-        upd left_arr left
-        upd top_arr top
-        upd advance_arr adv
-  mapM_ loadGlyph $ zip [0 .. ] chs
-  return (tex_arr, gs)
-
-inc :: (Arith a, Lit a, Num a) => Ptr a -> M ()
-inc p = modify p $ (+) 1
-dec :: (Arith a, Lit a, Num a) => Ptr a -> M ()
-dec p = modify p $ flip (-) 1
-
-blitString :: Font -> String' -> Int' -> Int' -> M ()
-blitString fnt s x0 y = do
-  i <- new 0
-  x <- new x0
-  while $ do
-    c <- let' (loadix s (load i))
-    inc i
-    r <- let' (c /=. (lit '\0'))
-    when r $ do
-      modify x $ \v -> do
-        (tex, [ left, top, advance]) <- lookupChar fnt c
-        blit tex (left + v) (top + y) 0
-        advance + v
-    r
-
-instance (Arith a, Lit a, Num a) => Num (I a) where
-  fromInteger = lit . fromInteger
-  (+) = binop add
-  (-) = binop sub
-  (*) = binop mul
-
-(==.) :: Cmp a => I a -> I a -> Bool'
-(==.) = binop eq
-
-binop f = fun (uncurry f)
-
-(/=.) :: Cmp a => I a -> I a -> Bool'
-(/=.) = binop ne
-
-instance Fractional Float' where
-  fromRational = lit . fromRational
-  (/) = binop div
-
-class Fun f g | f -> g where fun :: g -> f
- 
-instance (Ret r) => Fun (() -> M r) (() -> M r) where
-  fun = id
- 
-instance (Ty a, Ret r) => Fun (I a -> M r) (V a -> M r) where
-  fun = joinF
-
-pair :: Applicative f => f a -> f b -> f (a, b)
-pair x y = (,) <$> x <*> y
-
-joinF f a = join (f <$> a)
-
-instance (Ty a, Ty b, Ret r) => Fun (I a -> I b -> M r) ((V a, V b) -> M r) where
-  fun o = \a b -> joinF o (pair a b)
-
-instance (Ty a, Ty b, Ty c, Ret r) =>
-  Fun (I a -> I b -> I c -> M r) (((V a, V b), V c) -> M r) where
-  fun o = \a b c -> joinF o (pair (pair a b) c)
-
-instance (Ty a, Ty b, Ty c, Ty d, Ret r) =>
-  Fun (I a -> I b -> I c -> I d -> M r) (((V a, V b), (V c, V d)) -> M r) where
-  fun o = \a b c d -> joinF o (pair (pair a b) (pair c d))
-
-instance (Ty a, Ty b, Ty c, Ty d, Ty e, Ret r) =>
-  Fun (I a -> I b -> I c -> I d -> I e -> M r)
-  ((((V a, V b), (V c, V d)), V e) -> M r) where
-  fun o = \a b c d e -> joinF o (pair (pair (pair a b) (pair c d)) e)
-
-instance (Ty a, Ty b, Ty c, Ty d, Ty e, Ty f, Ret r) =>
-  Fun (I a -> I b -> I c -> I d -> I e -> I f -> M r)
-  ((((V a, V b), (V c, V d)), (V e, V f)) -> M r) where
-  fun o = \a b c d e f -> joinF o (pair (pair (pair a b) (pair c d)) (pair e f))
-
-ffi :: (Ret r, Args a, Fun c (a -> M r)) => String -> c
-ffi = fun . E.ffi
-
-expr :: (Lit a, Fun a g) => g -> I a
-expr = lit . fun
-
-cast :: (Cast a, Cast b) => I a -> I b
-cast = fun E.cast
-
-(<-.) :: Ty a => Ptr a -> I a -> M ()
-(<-.) p = fun (flip store p)
-
-(+=) x = modify x . (+)
-(-=) x = modify x . flip (-)
-
-let' :: Ty a => I a -> M (I a)
-let' m = m >>= \a -> return (return a)
-
-(<.) :: Cmp a => I a -> I a -> Bool'
-(<.) = binop lt
-(>.) :: Cmp a => I a -> I a -> Bool'
-(>.) = binop gt
-(>=.) :: Cmp a => I a -> I a -> Bool'
-(>=.) = binop ge
-(<=.) :: Cmp a => I a -> I a -> Bool'
-(<=.) = binop le
-
 main :: IO ()
-main = mainM $ do
+main = mainM "t.ll" $ \_argc _argv -> do
+  let screen_w = 1280
+  init_sdl 30 550 screen_w 256
   outbuf <- allocn 1024
   vx <- new 1
   vr <- new 0
@@ -281,8 +60,6 @@ main = mainM $ do
   t1 <- new 0
   x <- new 1200
   r <- new 90
-  let screen_w = 1280
-  init_sdl 30 550 screen_w 256
   font <- loadFont "LuckiestGuy.ttf" 36
   tex@(_,(ship_w, ship_h)) <- loadTex "ship.png.rgba"
   set_color 0 0x30 0 0xff
@@ -323,6 +100,51 @@ main = mainM $ do
       , (sdlk_right, inc vr >> true)
       ]
   cleanup_sdl 0
+  0
+
+loadTex :: FilePath -> M Tex
+loadTex fn = do
+  let sz@(w,h) = maybe (error $ "unknown texture:" ++ show fn) id $ lookup fn textures
+  a <- w
+  b <- h
+  tex <- cstring fn >>= \s -> load_rgba (s, (a,b))
+  return (tex, sz)
+
+loadFont :: String -> Int32 -> M Font
+loadFont nm pt = do
+  let fid = (nm,pt)
+  let chs =
+        maybe (error $ "unknown font:" ++ show fid) id $ lookup fid metrics
+  let n = fromIntegral $ length chs
+  tex_arr <- allocn n
+  gs@[w_arr, h_arr, left_arr, top_arr, advance_arr] <-
+    sequence $ replicate 5 $ allocn n
+  let loadGlyph (i, (_, left, top, adv, (fn, _))) = do
+        let upd arr a = ix arr (fromIntegral i) >>= \i -> i <-. a
+        (t, (w,h)) <- loadTex fn
+        upd tex_arr $ return t
+        upd w_arr w
+        upd h_arr h
+        upd left_arr left
+        upd top_arr top
+        upd advance_arr adv
+  mapM_ loadGlyph $ zip [0 .. ] chs
+  return (tex_arr, gs)
+
+blitString :: Font -> String' -> Int' -> Int' -> M ()
+blitString fnt s x0 y = do
+  i <- new 0
+  x <- new x0
+  while $ do
+    c <- let' (loadix s (load i))
+    inc i
+    r <- let' (c /=. (lit '\0'))
+    when r $ do
+      modify x $ \v -> do
+        (tex, [ left, top, advance]) <- lookupChar fnt c
+        blit tex (left + v) (top + y) 0
+        advance + v
+    r
 
 loadix :: Ty a => Array a -> Int' -> I a
 loadix x i = ix x i >>= load

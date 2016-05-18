@@ -47,6 +47,11 @@ data V a = V{ valof :: Value, tyof :: Type } deriving Show
 castV :: V a -> V b
 castV (V a b) = V a b
 
+-- | Internal function for (unsafely) forcing a change in an
+-- instruction type.
+castI :: I a -> I b
+castI m = castV <$> m
+
 -- | Helper function for use when you want to show both the type and
 -- the value, e.g. i32 7.
 tyvalof :: V a -> String
@@ -134,29 +139,97 @@ instance Ty Double where ty _ = "double"
 instance Ty a => Ty (Ptr a) where
   ty (_ :: I (Ptr a)) = ty (unused "Ty Ptr" :: I a) ++ "*"
 
--- | A class is used to model parameters/arguments.  We only need
--- instances for zero, one, and two arguments.  Everything else can be
--- constructed from those.
-class Args a where
-  instantiate :: M a
-  unArgs :: a -> [V ()]
+-- | A class is used to model functions (both external and user
+-- defined).  We only need instances for zero or one arguments and
+-- zero or one return values.  Everything else can be constructed from
+-- those.  The class methods are used as helpers for the top-level
+-- definitions of declare and define.
+class Fun a where
+  _declare :: [I ()] -> String -> a
+  _define :: [I ()] -> String -> ([V ()] -> a) -> a
 
--- | Zero arguments.
-instance Args () where
-  instantiate = return ()
-  unArgs () = []
-
--- | Single argument.
-instance Ty a => Args (V a) where
-  instantiate = do
-    cxt <- modifyCxt $ \cxt -> cxt{ nextVar = succ $ nextVar cxt }
-    return $ mkV ("%v" ++ show (nextVar cxt))
-  unArgs x = [castV x]
+-- | Void return value functions.
+instance Fun (M ()) where
+  _declare xs n = sequence xs >>= declareM n "void" >>= instr
+  _define xs n f = sequence xs >>= defineM n "void" f (const "void") >>= instr
   
--- | Two arguments.
-instance (Args a, Args b) => Args (a,b) where
-  instantiate = (,) <$> instantiate <*> instantiate
-  unArgs (x,y) = unArgs x ++ unArgs y
+-- | Single return value functions.
+instance Ty a => Fun (M (V a)) where
+  _declare xs n = b where b = sequence xs >>= declareM n (ty b) >>= assign
+  _define xs n f = b where b = sequence xs >>= defineM n (ty b) f tyvalof >>= assign
+
+-- | Functions with value argument(s).
+instance (Ty a, Fun b) => Fun (V a -> b) where
+  _declare xs n = \v -> _declare (return (castV v) : xs) n
+  _define xs n f =
+    \a -> _define (return (castV a) : xs) n $ \(v:vs) -> f vs (castV v)
+
+-- | Functions with instruction argument(s).
+instance (Ty a, Fun b) => Fun (I a -> b) where
+  _declare xs n = \v -> _declare (castI v : xs) n
+  _define xs n f =
+    \a -> _define (castI a : xs) n $ \(v:vs) -> f vs (return $ castV v)
+
+-- | Declare an external function.  This is Eel's foreign function
+-- interface.
+-- http://llvm.org/docs/LangRef.html#global-variables
+declare :: Fun a => String -> a
+declare = _declare []
+
+-- | LLVM function definitions.
+-- http://llvm.org/docs/LangRef.html#functions
+define :: Fun a => String -> a -> a
+define n f = _define [] n (\[] -> f)
+
+-- | Helper function to generate LLVM declarations.
+declareM :: String -> Type -> [V ()] -> M [String]
+declareM n t xs0 = do
+  let xs = reverse xs0
+  whenUnknown n $ instr ["declare", t, global n, params $ tyof <$> xs ]
+  return $ call t n xs
+
+-- | Helper function to generate LLVM definitions.
+defineM :: String -> Type -> ([V ()] -> M a) -> (a -> String) -> [V ()] -> M [String]
+defineM n t f g xs0 = do
+  let xs = reverse xs0
+  whenUnknown n $ do
+    vs <- mapM (newVarT . tyof) xs -- BAL: let's just start a new scope and renumber xs
+    instr ["define", t, global n, params $ tyvalof <$> vs]
+    output "{"
+    b <- f $ reverse vs
+    instr ["ret", g b]
+    output "}"
+  return $ call t n xs
+
+-- | Helper function that adds definitions and declarations to the
+-- state if they haven't been seen before.
+whenUnknown :: String -> M () -> M ()
+whenUnknown n m = do
+  ns <- (fst . unzip) <$> gets namespace
+  when (n `notElem` ns) $ do
+    modify $ \st -> st{ context = initContext, contexts =  context st : contexts st }
+    m
+    modify $ \st -> st
+      { namespace = (n, reverse $ outputs $ context st) : namespace st
+      , context = head $ contexts st
+      , contexts = tail $ contexts st
+      }
+
+-- | Generate a fresh typed variable.
+newVar :: Ty a => M (V a)
+newVar = let b = newVarT (ty b) in b
+
+-- | Generate a fresh variable of the given type.
+newVarT :: Type -> M (V a)
+newVarT t = do
+  cxt <- modifyCxt $ \cxt -> cxt{ nextVar = succ $ nextVar cxt }
+  return $ V{ valof = "%v" ++ show (nextVar cxt), tyof = t }
+    
+-- | Internal function used for LLVM procedure call instruction.  In
+-- Eel 'call's are implicit.
+-- http://llvm.org/docs/LangRef.html#call-instruction
+call :: Type -> String -> [V ()] -> [String]
+call t n xs = ["call", t, global n, params $ tyvalof <$> xs]
 
 -- | A class will allow us to convert Haskell values into LLVM
 -- literals.
@@ -191,6 +264,8 @@ instance Lit Float where lit = mkV . doubleToIEEE754Hex . fromRational . toRatio
 -- | 64 bit ordered doubles.  Currently broken.
 instance Lit Double where lit = mkV . doubleToIEEE754Hex
 
+-- | Helper function used to convert floating literals into the 16 digit
+-- hex values used by LLVM.
 doubleToIEEE754Hex :: Double -> String
 doubleToIEEE754Hex x = "0x" ++ concat (fmap f $ S.unpack $ runPut $ putFloat64be x)
   where
@@ -211,7 +286,7 @@ data ArithRec a = ArithRec
 
 -- | LLVM arithmetic primitives are (ad hoc)polymorphic so let's create
 -- a class to enable/enforce that too.
-class Ty a => Arith a where
+class Lit a => Arith a where
   arithRec :: ArithRec a
 
 -- | ArithRec helper for signed integer types.
@@ -526,95 +601,23 @@ cast x = b
       _ -> return $ castV x -- Types are LLVM equivalent.  Just change the EDSL type.
     to s = assign [s, tyvalof x, "to", ty b]
 
--- | Internal function used for LLVM function definitions. The
--- argument with type (M b -> String) must be a function that doesn't
--- evaluate it's argument.
--- http://llvm.org/docs/LangRef.html#functions
-define :: Args a => String -> (a -> M b) -> (M b -> String) -> (b -> String) -> M ()
-define n f g h = whenUnknown n $ do
-  x <- instantiate
-  instr ["define", g $ f x, global n, params $ tyvalof <$> unArgs x]
-  output "{"
-  b <- f x
-  instr ["ret", h b]
-  output "}"
+-- | LLVM phi instruction.
+-- http://llvm.org/docs/LangRef.html#phi-instruction
+class Phi a where
+  phi :: [(a, Label)] -> M a
 
--- | Helper function that adds definitions and declarations to the
--- state if they haven't been seen before.
-whenUnknown :: String -> M () -> M ()
-whenUnknown n m = do
-  ns <- (fst . unzip) <$> gets namespace
-  when (n `notElem` ns) $ do
-    modify $ \st -> st{ context = initContext, contexts =  context st : contexts st }
-    m
-    modify $ \st -> st
-      { namespace = (n, reverse $ outputs $ context st) : namespace st
-      , context = head $ contexts st
-      , contexts = tail $ contexts st
-      }
-
-class Ret r where
-  -- | Function definition.  Function definitions are generated
-  -- automatically.
-  -- http://llvm.org/docs/LangRef.html#functions
-  func :: (Args a) => String -> (a -> M r) -> a -> M r
-  -- | Foreign function interface.  Function declarations are
-  -- generated automatically.
-  -- http://llvm.org/docs/LangRef.html#functions
-  ffi :: (Args a) => String -> a -> M r
-  -- | Internal function used for LLVM procedure call instruction.
-  -- http://llvm.org/docs/LangRef.html#call-instruction
-  call :: (Args a) => String -> a -> M r
-  -- | 'if' function (works for both expressions and statements).
-  if' :: I Bool -> M r -> M r -> M r
-
-instance Ty b => Ret (V b) where
-  func n f a = define n f ty tyvalof >> call n a
-  ffi n x = let b = declare n (ty b) x >> call n x in b
-  call n x = b
+-- | Phi for values.
+instance Ty a => Phi (V a) where
+  phi xs = a
     where
-      b = assign ["call", ty b, global n, params $ tyvalof <$> unArgs x]
-  if' x y z = do
-    a <- x
-    true_lbl <- newLabel
-    false_lbl <- newLabel
-    done_lbl <- newLabel
-    br a true_lbl false_lbl
-    block true_lbl
-    b <- y
-    phi_true_lbl <- currBlock
-    br' done_lbl
-    block false_lbl
-    c <- z
-    phi_false_lbl <- currBlock
-    br' done_lbl
-    block done_lbl
-    phi [(b, phi_true_lbl), (c, phi_false_lbl)]
-  
-instance Ret () where
-  func n f a = define n f (const "void") (const "void") >> call n a
-  ffi n a = declare n "void" a >> call n a
-  call n x = instr ["call", "void", global n, params $ tyvalof <$> unArgs x]
-  if' x y z = do
-    a <- x
-    true_lbl <- newLabel
-    false_lbl <- newLabel
-    done_lbl <- newLabel
-    br a true_lbl false_lbl
-    block true_lbl
-    y
-    br' done_lbl
-    block false_lbl
-    z
-    br' done_lbl
-    block done_lbl
-  
--- | Internal function used for LLVM function declarations.
--- functions.  http://llvm.org/docs/LangRef.html#functions
-declare :: (Args a) => String -> Type -> a -> M ()
-declare n t x = whenUnknown n $
-  instr ["declare", t, global n, params $ tyof <$> unArgs x ]
+      a = assign ["phi", ty a, commas [ "[" ++ valof b `comma` "%" ++ c ++ "]"
+                                      | (b,c) <- xs ] ]
 
+-- | Phi for ().  This just gives us enough adhoc polymorphism so that
+-- if' can be defined.
+instance Phi () where
+  phi _ = return ()
+  
 -- | LLVM alloca instruction with the number of elements.
 -- http://llvm.org/docs/LangRef.html#alloca-instruction
 alloca :: (Ty a, IsInt b) => V b -> I (Ptr a)
@@ -638,19 +641,20 @@ getelementptr :: (Ty a, IsInt b) => V (Ptr a) -> V b -> I (Ptr a)
 getelementptr p i = assign ["getelementptr", tyvalof p `comma` tyvalof i]
 
 -- | Generate text from our monad.  This is the program generation
--- entry point.
--- | As an example:
+-- entry point.  As an example:
 --
--- >>> mainM "t.ll" $ \(argc, _argv) -> sub argc (lit 1)
+-- >>> mainM "t.ll" $ \argc _argv -> sub argc (lit 1)
+-- >>> :!cat t.ll
 -- 
--- define i32 @main (i32 %v0, i8** %v1)
+-- define i32 @eel_main (i32 %v0, i8** %v1)
 -- {
 -- %v2 = sub i32 %v0, 1
 -- ret i32 %v2
 -- }
-mainM :: String -> ((V Int32, V (Ptr (Ptr Char))) -> I Int32) -> IO ()
+mainM :: String -> (V Int32 -> V (Ptr (Ptr Char)) -> I Int32) -> IO ()
 mainM filename f = do
-  let st = execState (define "eel_main" f ty tyvalof) $ St initContext [] [] []
+  let st = execState (join (define "eel_main" f <$> newVar <*> newVar)) $
+             St initContext [] [] []
   writeFile filename $ unlines $ concat $ reverse $ snd <$> namespace st
       
 -- | Quick and dirty representation of LLVM labels.
@@ -693,14 +697,6 @@ br x y z = popBlock >> instr ["br", tyvalof x `comma` label y `comma` label z]
 -- http://llvm.org/docs/LangRef.html#br-instruction
 br' :: Label -> M ()
 br' x = popBlock >> instr ["br", label x]
-
--- | LLVM phi instruction.
--- http://llvm.org/docs/LangRef.html#phi-instruction
-phi :: Ty a => [(V a, Label)] -> I a
-phi xs = a
-  where
-    a = assign ["phi", ty a, commas [ "[" ++ valof b `comma` "%" ++ c ++ "]"
-                                    | (b,c) <- xs ] ]
   
 -- | Construct a local unique label.
 newLabel :: M Label
@@ -711,7 +707,7 @@ newLabel = do
 -- | Helper function for LLVM assignment instructions.
 assign :: Ty a => [String] -> I a
 assign xs = do
-  a <- instantiate
+  a <- newVar
   instr $ [valof a, "="] ++ xs
   return a
 
