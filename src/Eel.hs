@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-|
 Module      : Eel
 Description : DSL
@@ -99,7 +100,7 @@ output s = void $ modifyCxt $ \cxt -> cxt{ outputs = s : outputs cxt }
   
 -- | LLVM pointer type.
 -- http://llvm.org/docs/LangRef.html#pointer-type
-data Ptr a = Ptr{ unPtr :: Word64 } deriving Show -- BAL: Should be architecture dependent
+newtype Ptr a = Ptr{ unPtr :: Word64 } deriving (Show, Num) -- BAL: Should be architecture dependent
   
 -- | Convenience function for when we need a value but we don't have
 -- one handy (so that we can extract its inferred type).
