@@ -99,7 +99,7 @@ output s = void $ modifyCxt $ \cxt -> cxt{ outputs = s : outputs cxt }
   
 -- | LLVM pointer type.
 -- http://llvm.org/docs/LangRef.html#pointer-type
-data Ptr a = Ptr{ unPtr :: Int } deriving Show
+data Ptr a = Ptr{ unPtr :: Word64 } deriving Show -- BAL: Should be architecture dependent
   
 -- | Convenience function for when we need a value but we don't have
 -- one handy (so that we can extract its inferred type).
@@ -259,10 +259,15 @@ instance Lit Word16 where lit = mkV . show
 instance Lit Word32 where lit = mkV . show
 -- | 64 bit unsigned integers.
 instance Lit Word64 where lit = mkV . show
--- | 32 bit ordered floats.  Currently broken.
+-- | 32 bit ordered floats.
 instance Lit Float where lit = mkV . doubleToIEEE754Hex . fromRational . toRational
--- | 64 bit ordered doubles.  Currently broken.
+-- | 64 bit ordered doubles.
 instance Lit Double where lit = mkV . doubleToIEEE754Hex
+-- | Pointers.
+instance Ty a => Lit (Ptr a) where
+  lit x = v where
+    v = mkV $ unwords ["inttoptr"
+                      , params [unwords [tyvalof $ lit $ unPtr x, "to", tyof v]]]
 
 -- | Helper function used to convert floating literals into the 16 digit
 -- hex values used by LLVM.
