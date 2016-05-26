@@ -5,15 +5,15 @@
 
 #define FLOAT_FMT "%9.1f"
 
-void puti(int x) { printf("%d\n", x); }
-void putd(double x) { printf(FLOAT_FMT"\n", x); }
-void putl(unsigned long int x) { printf("%lu\n", x); }
-void putb(int x) { if(x == 0) {printf("false\n"); } else {printf("true\n"); } }
-void putu(unsigned int x) { printf("%u\n", x); }
-void putf(float x) { printf(FLOAT_FMT"\n", x); }
-void putp(void *x) { printf("@%p\n", x); }
-void putcstr(char *s) { printf("\"%s\"\n", s); }
-void putcchar(char c) { printf("'%c'\n", c); }
+void puti(int x) { printf("%d", x); }
+void putd(double x) { printf(FLOAT_FMT, x); }
+void putl(unsigned long int x) { printf("%lu", x); }
+void putb(int x) { if(x == 0) {printf("false"); } else {printf("true"); } }
+void putu(unsigned int x) { printf("%u", x); }
+void putf(float x) { printf(FLOAT_FMT, x); }
+void putp(void *x) { printf("@%p", x); }
+void putcstr(char *s) { printf("\"%s\"", s); }
+void putcchar(char c) { printf("%c", c); }
 
 void sputf(char *buf, float x) { sprintf(buf,FLOAT_FMT, x); }
 void sputl(char *buf, unsigned long int x) { sprintf(buf,"%lu", x); }
